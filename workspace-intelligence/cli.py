@@ -194,16 +194,15 @@ def cmd_update(args: argparse.Namespace) -> None:
     store = _load_graph(graph_path)
     stats_before = store.stats()
 
-    # Import incremental modules (may not exist yet)
+    # Import incremental modules
     try:
         from incremental.change_detector import (
-            detect_changes, map_changes_to_graph,
+            detect_changes, detect_uncommitted, map_changes_to_graph,
         )
-        from incremental.staleness import propagate_staleness, get_stale_summary
+        from incremental.staleness import propagate_staleness
         from incremental.selective_reindex import selective_reindex
     except ImportError as e:
         print(f"ERROR: Incremental modules not available: {e}")
-        print("  The incremental package is required for the 'update' command.")
         print("  Ensure incremental/ directory exists with:")
         print("    - change_detector.py")
         print("    - staleness.py")
@@ -213,45 +212,58 @@ def cmd_update(args: argparse.Namespace) -> None:
     passes = args.passes.split(",") if args.passes else ["treesitter", "patterns"]
     ref = args.ref
 
-    # Step 2: Detect changes
+    # Step 2: Detect changes (committed or uncommitted)
     print(f"Detecting changes since {ref}...")
     try:
-        changes = detect_changes(workspace_path, ref=ref)
+        changeset = detect_changes(workspace_path, ref=ref)
     except Exception as e:
         print(f"ERROR detecting changes: {e}")
         sys.exit(1)
 
-    if not changes:
+    if not changeset.changes:
+        print("No committed changes. Checking uncommitted...")
+        try:
+            changeset = detect_uncommitted(workspace_path)
+        except Exception as e:
+            print(f"ERROR detecting uncommitted changes: {e}")
+            sys.exit(1)
+
+    if not changeset.changes:
         print("No changes detected. Graph is up to date.")
         return
 
-    print(f"  Found {len(changes)} changed files.")
-    for change in changes[:10]:
-        status = getattr(change, "status", "modified")
-        path = getattr(change, "path", str(change))
-        print(f"    [{status}] {path}")
-    if len(changes) > 10:
-        print(f"    ... and {len(changes) - 10} more")
+    print(f"  Found {len(changeset.changes)} changed files.")
+    for fc in changeset.changes[:10]:
+        print(f"    [{fc.change_type.value}] {fc.path}")
+    if len(changeset.changes) > 10:
+        print(f"    ... and {len(changeset.changes) - 10} more")
 
     # Step 3: Map changes to graph nodes
     print("Mapping changes to graph nodes...")
-    affected_nodes = map_changes_to_graph(changes, store)
-    print(f"  {len(affected_nodes)} graph nodes affected.")
+    changeset = map_changes_to_graph(changeset, store)
+    print(f"  {len(changeset.affected_node_ids)} graph nodes affected.")
 
     # Step 4: Propagate staleness
-    print("Propagating staleness...")
-    stale_count = propagate_staleness(store, affected_nodes)
-    print(f"  {stale_count} nodes marked stale (including cascade).")
+    if changeset.affected_node_ids:
+        print("Propagating staleness...")
+        cascade_report = propagate_staleness(store, changeset.affected_node_ids, hops=2)
+        stale_count = cascade_report.total_newly_stale
+        print(f"  {stale_count} nodes marked stale (including cascade).")
+    else:
+        stale_count = 0
+        print("  No existing nodes affected — likely new files only.")
 
     # Step 5: Selective reindex
     print("Running selective reindex...")
     reindex_result = selective_reindex(
         store=store,
-        workspace_path=workspace_path,
-        changed_files=changes,
+        changeset=changeset,
         passes=passes,
     )
-    print(f"  Reindexed {getattr(reindex_result, 'files_processed', '?')} files.")
+    print(f"  Reindexed {reindex_result.files_processed} files.")
+    if reindex_result.errors:
+        for err in reindex_result.errors:
+            print(f"  WARNING: {err}")
 
     # Step 6: Save updated graph
     print(f"Saving updated graph to: {graph_path}")
@@ -262,19 +274,107 @@ def cmd_update(args: argparse.Namespace) -> None:
     print(f"\n{'='*60}")
     print(f"  Incremental Update Summary")
     print(f"{'='*60}")
-    print(f"  Workspace:    {workspace_path}")
-    print(f"  Ref:          {ref}")
-    print(f"  Files changed: {len(changes)}")
-    print(f"  Nodes affected: {len(affected_nodes)}")
-    print(f"  Nodes staled:   {stale_count}")
+    print(f"  Workspace:     {workspace_path}")
+    print(f"  Ref:           {ref}")
+    print(f"  Files changed: {len(changeset.changes)}")
+    print(f"  Nodes affected:{len(changeset.affected_node_ids)}")
+    print(f"  Nodes staled:  {stale_count}")
+    print(f"  Reindexed:     +{reindex_result.nodes_added} nodes, -{reindex_result.nodes_removed} nodes")
     print(f"{'-'*60}")
     print(f"  Nodes before:  {stats_before['total_nodes']}")
     print(f"  Nodes after:   {stats_after['total_nodes']}")
     print(f"  Edges before:  {stats_before['total_edges']}")
     print(f"  Edges after:   {stats_after['total_edges']}")
-    print(f"  Stale nodes:   {stats_after['stale_nodes']}")
-    print(f"  Stale edges:   {stats_after['stale_edges']}")
+    print(f"  Stale nodes:   {stats_after.get('stale_nodes', 0)}")
+    print(f"  Stale edges:   {stats_after.get('stale_edges', 0)}")
+    print(f"  Duration:      {reindex_result.duration_ms:.0f}ms")
     print(f"{'='*60}\n")
+
+
+# =============================================================================
+# Command: watch
+# =============================================================================
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Watch a workspace for changes and update graph in real-time."""
+    _setup_logging(args.verbose)
+    workspace_path = Path(args.workspace_path).resolve()
+
+    if not workspace_path.is_dir():
+        print(f"ERROR: Not a directory: {workspace_path}")
+        sys.exit(1)
+
+    graph_path = _resolve_graph_path(args.graph, workspace_path)
+
+    if not graph_path.is_file():
+        print(f"ERROR: No graph file at {graph_path}")
+        print(f"  Run 'python cli.py index {workspace_path}' first to build the initial graph.")
+        sys.exit(1)
+
+    try:
+        from incremental.watcher import GraphWatcher
+    except ImportError as e:
+        print(f"ERROR: {e}")
+        print("  Install watchdog: pip install watchdog")
+        sys.exit(1)
+
+    def on_update(event):
+        files = ", ".join(f.split("/")[-1] for f in event.changed_files)
+        print(
+            f"  [{time.strftime('%H:%M:%S')}] {files} "
+            f"→ +{event.nodes_added} -{event.nodes_removed} nodes, "
+            f"{event.nodes_stale} stale ({event.duration_ms:.0f}ms)"
+        )
+
+    import time
+
+    print(f"{'='*60}")
+    print(f"  Workspace Intelligence — Live Watcher")
+    print(f"{'='*60}")
+    print(f"  Workspace: {workspace_path}")
+    print(f"  Graph:     {graph_path}")
+    print(f"  Watching for file changes...")
+    print(f"  Press Ctrl+C to stop.\n")
+
+    watcher = GraphWatcher(
+        workspace_path=workspace_path,
+        graph_path=graph_path,
+        on_update=on_update,
+    )
+
+    if args.viewer:
+        # Start viewer server with watcher in the same process
+        import subprocess as sp
+        viewer_cmd = [
+            sys.executable,
+            str(Path(__file__).parent / "viewer" / "server.py"),
+            "--port", str(args.port),
+            "--watch", str(workspace_path),
+            "--graph", str(graph_path),
+        ]
+        print(f"  Viewer:    http://127.0.0.1:{args.port}")
+        print(f"  Live SSE:  ENABLED\n")
+        try:
+            proc = sp.Popen(viewer_cmd)
+            # Just wait for Ctrl+C
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                proc.terminate()
+                print("\nStopped.")
+        except Exception as e:
+            print(f"ERROR starting viewer: {e}")
+            sys.exit(1)
+    else:
+        # Run watcher only (no viewer)
+        watcher.start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            watcher.stop()
+            print("\nStopped.")
 
 
 # =============================================================================
@@ -926,6 +1026,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output file path (default: auto-generated in workspace directory)",
     )
     p_export.set_defaults(func=cmd_export)
+
+    # -- watch ----------------------------------------------------------------
+    p_watch = subparsers.add_parser(
+        "watch",
+        help="Watch a workspace and update graph in real-time",
+        description="Monitor a workspace for file changes, auto-update the graph, "
+                    "and optionally serve the viewer with live updates.",
+    )
+    p_watch.add_argument(
+        "workspace_path",
+        help="Path to the workspace directory to watch",
+    )
+    p_watch.add_argument(
+        "--graph",
+        default=None,
+        help="Path to existing graph JSON (default: auto-detect from graphs/)",
+    )
+    p_watch.add_argument(
+        "--viewer", action="store_true",
+        help="Also start the viewer with live updates (default port 8080)",
+    )
+    p_watch.add_argument(
+        "--port", type=int, default=8080,
+        help="Viewer port (default: 8080, only used with --viewer)",
+    )
+    p_watch.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Enable verbose/debug logging",
+    )
+    p_watch.set_defaults(func=cmd_watch)
 
     return parser
 

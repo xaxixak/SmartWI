@@ -910,9 +910,101 @@ window.addEventListener('resize', () => {
 });
 
 // -----------------------------------------------------------------------
+// Live Updates via Server-Sent Events (SSE)
+// -----------------------------------------------------------------------
+let _liveUpdateEnabled = false;
+let _eventSource = null;
+let _updateBanner = null;
+
+function initLiveUpdates() {
+  _eventSource = new EventSource('/api/events');
+  _eventSource.addEventListener('graph-updated', (e) => {
+    const data = JSON.parse(e.data);
+    console.log('[LIVE] Graph updated:', data);
+    _liveUpdateEnabled = true;
+    showUpdateBanner(data);
+    reloadGraph();
+  });
+  _eventSource.onerror = () => {
+    // SSE not available (server doesn't support watch mode) — silently ignore
+    if (_eventSource.readyState === EventSource.CLOSED) {
+      console.log('[LIVE] SSE not available');
+    }
+  };
+}
+
+function showUpdateBanner(data) {
+  if (!_updateBanner) {
+    _updateBanner = document.createElement('div');
+    _updateBanner.id = 'live-banner';
+    _updateBanner.style.cssText = `
+      position: fixed; top: 8px; right: 8px; z-index: 1000;
+      background: #1a1a2e; border: 1px solid #4ecca3; border-radius: 8px;
+      padding: 8px 14px; color: #4ecca3; font-size: 12px;
+      font-family: monospace; opacity: 0; transition: opacity 0.3s;
+      pointer-events: none; max-width: 320px;
+    `;
+    document.body.appendChild(_updateBanner);
+  }
+  const files = data.changed_files.map(f => f.split('/').pop()).join(', ');
+  _updateBanner.innerHTML = `
+    <span style="color:#e94560">LIVE</span>
+    ${files} &mdash;
+    +${data.nodes_added} -${data.nodes_removed} nodes,
+    ${data.nodes_stale} stale
+    <span style="color:#666">(${Math.round(data.duration_ms)}ms)</span>
+  `;
+  _updateBanner.style.opacity = '1';
+  setTimeout(() => { _updateBanner.style.opacity = '0'; }, 4000);
+}
+
+async function reloadGraph() {
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const graphPath = urlParams.get('graph');
+    const apiUrl = graphPath ? `/api/graph?path=${encodeURIComponent(graphPath)}` : '/api/graph';
+    const resp = await fetch(apiUrl);
+    if (!resp.ok) return;
+    const newData = await resp.json();
+
+    // Preserve positions from existing nodes
+    const posMap = {};
+    for (const n of rawData.nodes) {
+      if (n.x !== undefined) posMap[n.id] = { x: n.x, y: n.y, vx: n.vx, vy: n.vy };
+    }
+
+    rawData = newData;
+
+    // Normalize tiers
+    for (const node of rawData.nodes) {
+      if (!node.tier) node.tier = NODE_TIER[node.type] || 'micro';
+      // Restore position if node existed before (smooth transition)
+      if (posMap[node.id]) {
+        node.x = posMap[node.id].x;
+        node.y = posMap[node.id].y;
+        node.vx = posMap[node.id].vx;
+        node.vy = posMap[node.id].vy;
+      }
+    }
+
+    // Update filters for any new types
+    const nodeTypes = new Set(rawData.nodes.map(n => n.type));
+    for (const t of nodeTypes) {
+      if (!(t in filters.nodeType)) filters.nodeType[t] = true;
+    }
+
+    updateGraph();
+    updateStats();
+  } catch (err) {
+    console.error('[LIVE] Reload failed:', err);
+  }
+}
+
+// -----------------------------------------------------------------------
 // Boot
 // -----------------------------------------------------------------------
 loadData();
+initLiveUpdates();
 
 </script>
 </body>
