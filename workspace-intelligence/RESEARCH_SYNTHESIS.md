@@ -2,6 +2,7 @@
 
 ## Date: 2026-02-09
 ## Agents: 3 parallel research agents (Code Intelligence Systems, Ontology Design, Pipeline Strategy)
+## Methodology: BMAD Method (Level 2-3, BMad Method Track)
 
 ---
 
@@ -216,33 +217,101 @@ workspace-intelligence/
 
 ---
 
-## 7. Build Priority
+## 7. BMAD Development Plan
 
-### Phase 1: Foundation (make the graph populate)
-1. Upgrade ontology.py to v2 (20 nodes, 27 edges, improved models)
-2. Build Pass 1: Tree-sitter extraction (60-70% of nodes, FREE)
-3. Build Pass 2: Pattern matching (reclassify + discover, FREE)
-4. Bridge scanner → graph (convert DiscoveredProject → GraphNode)
+### Methodology: BMAD Method Track (Level 2-3)
+- **Complexity**: ~25 stories across 5 epics
+- **Track**: BMad Method (Phase 2 PRD → Phase 3 Architecture → Phase 4 Sprints)
+- **Phase 1 (Analysis)**: DONE (3-agent deep research)
+- **Phase 2 (Planning)**: DONE (this document = PRD equivalent)
+- **Phase 3 (Solutioning)**: DONE (ontology_v2.py = architecture, ONTOLOGY_DESIGN.md = ADR)
+- **Phase 4 (Implementation)**: NEXT → Sprints below
 
-### Phase 2: Intelligence (add the "story")
-5. Build Pass 3: LLM semantic analysis (async, batched)
-6. Build LLM client with prompt caching + cost tracking
-7. Build orchestrator with JSON checkpoint resume
+---
 
-### Phase 3: Self-Healing
-8. Build change detector (git diff based)
-9. Build staleness propagation (2-hop cascade)
-10. Build selective re-indexer
+### Epic 1: Foundation (Sprint 1-2) — FREE, no API cost
+*Goal: Make the graph populate with structural data from any codebase*
 
-### Phase 4: Consumption
-11. Build MCP server (SearchEntity, TraverseGraph, GetContext, ImpactAnalysis)
-12. Enhance ContextPack with edges, snippets, invariants, patterns
-13. Token budget system for context window management
+| Story | Task | Acceptance Criteria | Est |
+|-------|------|-------------------|-----|
+| 1.1 | Upgrade ontology.py to v2 | 20 NodeTypes, 27 EdgeTypes, GraphNode has provenance/source_hash/tags/language/parent_id/version/tier, GraphEdge has provenance/is_stale/weight/conditional/location, ContextPack has 13 fields. All Pydantic models validate. | M |
+| 1.2 | Fix scanner.py bugs | .csproj/sln glob matching works, monorepo detection (nx.json, turbo.json, lerna.json, pnpm-workspace.yaml), CI/CD detection (.github/workflows, .gitlab-ci.yml), API schema detection (openapi.yaml, schema.graphql, *.proto) | S |
+| 1.3 | Bridge scanner → graph | ScanResult → GraphNode conversion. Running scanner on a workspace auto-populates Workspace, Project, InfraConfig, Resource nodes in GraphStore. docker-compose.yml parsing creates Resource nodes. | M |
+| 1.4 | Build pass1_treesitter.py | Tree-sitter parses JS/TS/Python/Go files. Extracts File, Function, Class, Import nodes. Creates CONTAINS, DEFINES, IMPORTS edges. Content-hash caching per file. 500 files in <5s. | L |
+| 1.5 | Build pass2_patterns.py | 15+ regex rules for Express/FastAPI/Django/NestJS endpoints, SQLAlchemy/Mongoose/Prisma models, event emit/consume, Redis cache ops, HTTP client calls. Reclassifies Pass 1 Function nodes to Endpoint/DataModel/Event/CacheKey. | L |
+| 1.6 | Build pipeline orchestrator | Runs Pass 0→1→2 sequentially. JSON checkpoint file for resume on crash. Stats output (nodes/edges created per pass, time per pass). CLI: `python cli.py index <workspace_path>` | M |
 
-### Phase 5: Quality & Scale
-14. Build Pass 4: Validation
-15. Add LanceDB for vector search
-16. Build visualization (graph viewer like original screenshot)
+**Sprint 1 Definition of Done**: Run `python cli.py index ./my-project` and get a populated graph with 300+ nodes and structural edges, saved to JSON.
+
+---
+
+### Epic 2: Intelligence (Sprint 3-4) — ~$0.68-2.35/500 files
+*Goal: Add operational edges — the "story" that tells AI what code DOES*
+
+| Story | Task | Acceptance Criteria | Est |
+|-------|------|-------------------|-----|
+| 2.1 | Build llm/client.py | Anthropic API wrapper. Prompt caching (cache_control: ephemeral). Exponential backoff + jitter on 429/529. Cost tracking (input/output/cache tokens). Configurable model per call. | M |
+| 2.2 | Build llm/prompts.py | tool_use schema for code analysis (nodes_discovered, edges_discovered, file_classification). System prompt with ontology context + known-nodes summary. Anti-hallucination rules. | M |
+| 2.3 | Build llm/model_router.py | Route by task: Haiku for file classification, Sonnet for semantic edges, Opus for conflicts. Configurable thresholds. | S |
+| 2.4 | Build chunker.py | AST-guided file splitting at function/class boundaries. Prepend imports as context. Handle files >8K tokens. Chunk merging for small sibling functions. | M |
+| 2.5 | Build pass3_llm.py | Async analysis with asyncio.Semaphore(10). Haiku classifies all files, Sonnet discovers operational edges (READS_DB, CALLS_API, EMITS_EVENT, etc.). Skips test/generated/config files. Results merged into graph. | XL |
+| 2.6 | Build llm/batch.py | Anthropic Batch API for initial full-index (50% cheaper). Submit up to 10K requests. Poll for completion. Parse batch results into graph. | M |
+
+**Sprint 3-4 DoD**: Run full index on a real project. Graph has operational edges (READS_DB, CALLS_API, EMITS_EVENT). Cost <$2.50 for 500 files.
+
+---
+
+### Epic 3: Self-Healing (Sprint 5) — ~$0.01/change
+*Goal: Graph auto-updates when code changes*
+
+| Story | Task | Acceptance Criteria | Est |
+|-------|------|-------------------|-----|
+| 3.1 | Build change_detector.py | Parse `git diff --name-status HEAD~1`. Return added/modified/deleted file lists. Map files to existing graph nodes. | S |
+| 3.2 | Build staleness.py | Mark node stale → cascade 2 hops (Event stale → consumers stale, DataModel stale → readers/writers stale, Endpoint stale → callers stale). Stop at 2 hops. | M |
+| 3.3 | Build selective_reindex.py | Re-run Passes 1-3 on stale files only. Merge results into existing graph (update, don't replace). Delete nodes from deleted files. | L |
+| 3.4 | Git hook integration | post-commit hook script that triggers selective re-index. Debounce for rapid commits. CLI: `python cli.py update` | S |
+
+**Sprint 5 DoD**: Change 1 file, run `python cli.py update`, graph updates in <10s, cost <$0.01.
+
+---
+
+### Epic 4: Consumption (Sprint 6-7) — AI agents use the graph
+*Goal: Expose the intelligence via MCP and enhanced ContextPack*
+
+| Story | Task | Acceptance Criteria | Est |
+|-------|------|-------------------|-----|
+| 4.1 | Enhance ContextPack | Add relevant_edges, related_files, code_snippets, invariants, patterns, stale_warnings, depth, total_nodes_in_scope. Token budget parameter. | M |
+| 4.2 | Enhance GraphStore | Batch add, subgraph extraction by tag/type, shortest path finding, graph diff (compare two snapshots), filter by confidence. | L |
+| 4.3 | Build MCP server | Tools: SearchEntity, TraverseGraph, GetContext, ImpactAnalysis, GetStory. Compatible with Claude Code, Cursor, Aider. | L |
+| 4.4 | Token budget system | 3 levels: L1 (names only, ~200 tokens), L2 (names + descriptions, ~1K tokens), L3 (full detail + snippets, ~4K tokens). Auto-select based on budget param. | M |
+| 4.5 | Build CLI commands | `index`, `query <node>`, `impact <node>`, `status`, `update`, `stats`, `export`. | M |
+
+**Sprint 6-7 DoD**: Claude Code uses MCP to query the graph. `GetContext("OrderService", "refactor DB schema")` returns complete ContextPack with edges, files, risk assessment.
+
+---
+
+### Epic 5: Quality & Scale (Sprint 8+) — Production polish
+*Goal: Validated data, visual UI, semantic search*
+
+| Story | Task | Acceptance Criteria | Est |
+|-------|------|-------------------|-----|
+| 5.1 | Build pass4_validation.py | Orphan detection, dangling edges, type constraint validation, cross-reference AST vs LLM claims, bidirectional edge verification. Confidence boost/penalty. | L |
+| 5.2 | Build conflict_resolver.py | Higher confidence wins (>0.1 diff), more specific type wins, tie → flag for human review. Merge parallel agent results. | M |
+| 5.3 | Add LanceDB vector search | Embed node descriptions with MiniLM-L6-v2. Semantic search: "find payment code" → ranked nodes. | M |
+| 5.4 | Build graph viewer (web UI) | D3.js/Cytoscape visualization like original Thorbit screenshot. Filter by node/edge type. Click node → side panel with details. | L |
+| 5.5 | PageRank importance ranking | Aider-style centrality scoring. High fan-in nodes = architecturally important. Weight context pack results by importance. | M |
+
+**Sprint 8+ DoD**: Graph viewer shows visual like the original screenshot. Semantic search works. Validation catches hallucinated edges.
+
+---
+
+### Size Estimates
+- **S** = Small (1-2 hours)
+- **M** = Medium (3-5 hours)
+- **L** = Large (6-10 hours)
+- **XL** = Extra Large (10+ hours)
+
+### Total: ~25 stories across 5 epics, 8+ sprints
 
 ---
 
@@ -253,6 +322,38 @@ workspace-intelligence/
 - Test file LLM analysis (skip in Pass 3, waste of tokens)
 - Full Neo4j for MVP (NetworkX is sufficient under 10K nodes)
 - Custom embedding model (use off-the-shelf MiniLM or Voyage)
+
+## 9. Architecture Decision Records (ADRs)
+
+### ADR-001: Tags vs Types
+- **Decision**: TEST, SCRIPT, UTILITY, MIGRATION = tags; ROUTER, COLLECTION, MIDDLEWARE, QUEUE, TYPEDEF, ENVVAR = types
+- **Rationale**: A concept becomes a TYPE only if it has unique edge semantics
+- **Status**: Decided
+
+### ADR-002: Graph Storage
+- **Decision**: NetworkX for MVP, Neo4j for production (>10K nodes)
+- **Rationale**: NetworkX is fast, in-memory, zero-config. Neo4j only needed at scale.
+- **Status**: Decided
+
+### ADR-003: LLM Provider
+- **Decision**: Anthropic API (Claude) with tool_use for structured output
+- **Rationale**: Best structured outputs, prompt caching (10x savings), batch API (50% savings)
+- **Status**: Decided
+
+### ADR-004: Multi-Pass Pipeline
+- **Decision**: 5-pass (scanner → tree-sitter → regex → LLM → validation)
+- **Rationale**: 80% of nodes cost $0. LLM reserved for semantic-only tasks.
+- **Status**: Decided
+
+### ADR-005: Self-Healing Strategy
+- **Decision**: Git diff → stale cascade (2-hop) → selective re-index
+- **Rationale**: Cheapest incremental update. Full re-index only weekly.
+- **Status**: Decided
+
+### ADR-006: Development Methodology
+- **Decision**: BMAD Method Track (Level 2-3) with PRP-style context packing for story execution
+- **Rationale**: Complex system (~25 stories) needs structured phased approach. BMAD provides epics/stories/sprints. PRP context packing ensures one-pass execution quality.
+- **Status**: Decided
 
 ---
 
