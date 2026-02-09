@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Workspace Intelligence - Graph Viewer</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+/* ======================================================================
+   CSS: Dark theme, CSS Grid layout
+   ====================================================================== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary:   #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-panel:     #0f3460;
+  --text-primary: #e0e0e0;
+  --text-muted:   #8899aa;
+  --accent:       #4A90D9;
+  --border:       #2a3a5e;
+  --tier-macro:   #4A90D9;
+  --tier-meso:    #50C878;
+  --tier-micro:   #FF8C42;
+  --edge-structural:   #888;
+  --edge-operational:  #4A90D9;
+  --edge-event:        #9B59B6;
+}
+
+body {
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  height: 100vh;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+}
+
+/* --- Toolbar --- */
+#toolbar {
+  grid-column: 1 / -1;
+  background: var(--bg-secondary);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+#toolbar h1 {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#search-box {
+  flex: 0 0 260px;
+  padding: 6px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+#search-box:focus { outline: none; border-color: var(--accent); }
+#search-box::placeholder { color: var(--text-muted); }
+
+.toolbar-stats {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* --- Sidebar --- */
+#sidebar {
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.filter-section h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.filter-group label {
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.filter-group label:hover { background: rgba(255,255,255,0.05); }
+
+.filter-group input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.color-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* --- Detail Panel --- */
+#detail-panel {
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  padding: 12px;
+  overflow-y: auto;
+  max-height: 280px;
+}
+
+#detail-panel.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+#detail-panel h3 {
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+
+.detail-grid .label {
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.detail-grid .value {
+  word-break: break-all;
+}
+
+.tag-badge {
+  display: inline-block;
+  background: rgba(74, 144, 217, 0.2);
+  border: 1px solid rgba(74, 144, 217, 0.4);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  margin: 1px 2px;
+}
+
+/* --- Graph container --- */
+#graph-container {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+#graph-container svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* --- SVG styling --- */
+.node-group { cursor: pointer; }
+.node-group:hover .node-shape { filter: brightness(1.3); }
+
+.node-label {
+  font-size: 10px;
+  fill: var(--text-primary);
+  text-anchor: middle;
+  pointer-events: none;
+  user-select: none;
+}
+
+.edge-line {
+  fill: none;
+  stroke-width: 1.2;
+}
+
+.edge-label {
+  font-size: 9px;
+  fill: var(--text-muted);
+  pointer-events: none;
+  opacity: 0;
+  user-select: none;
+}
+
+.edge-group:hover .edge-label { opacity: 1; }
+.edge-group:hover .edge-line { stroke-width: 2.5; }
+
+/* --- Tooltip --- */
+.tooltip {
+  position: absolute;
+  background: rgba(15, 52, 96, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 100;
+  max-width: 300px;
+  display: none;
+}
+.tooltip .tt-name { font-weight: 600; }
+.tooltip .tt-type { color: var(--text-muted); font-size: 11px; }
+
+/* --- Selected node highlight --- */
+.node-selected .node-shape {
+  stroke: #fff !important;
+  stroke-width: 3 !important;
+}
+
+/* --- Scrollbar --- */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* --- Select All/None buttons --- */
+.filter-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.filter-actions button {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.filter-actions button:hover {
+  background: rgba(255,255,255,0.05);
+  color: var(--text-primary);
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <h1>Workspace Intelligence</h1>
+    <input type="text" id="search-box" placeholder="Search nodes by name..." />
+    <span class="toolbar-stats" id="stats-display">Loading...</span>
+  </div>
+
+  <!-- Sidebar: filters + detail panel -->
+  <div id="sidebar">
+
+    <!-- Tier filter -->
+    <div class="filter-section">
+      <h3>Tier</h3>
+      <div class="filter-actions">
+        <button onclick="toggleAll('tier', true)">All</button>
+        <button onclick="toggleAll('tier', false)">None</button>
+      </div>
+      <div class="filter-group" id="tier-filters"></div>
+    </div>
+
+    <!-- Node type filter -->
+    <div class="filter-section">
+      <h3>Node Type</h3>
+      <div class="filter-actions">
+        <button onclick="toggleAll('nodeType', true)">All</button>
+        <button onclick="toggleAll('nodeType', false)">None</button>
+      </div>
+      <div class="filter-group" id="node-type-filters"></div>
+    </div>
+
+    <!-- Edge type filter -->
+    <div class="filter-section">
+      <h3>Edge Group</h3>
+      <div class="filter-actions">
+        <button onclick="toggleAll('edgeGroup', true)">All</button>
+        <button onclick="toggleAll('edgeGroup', false)">None</button>
+      </div>
+      <div class="filter-group" id="edge-group-filters"></div>
+    </div>
+
+    <!-- Detail panel -->
+    <div id="detail-panel" class="empty">Click a node to see details</div>
+  </div>
+
+  <!-- Graph -->
+  <div id="graph-container">
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+</div>
+
+<script>
+/* ======================================================================
+   JavaScript: D3.js force-directed graph viewer
+   ====================================================================== */
+
+// -----------------------------------------------------------------------
+// Constants from ontology
+// -----------------------------------------------------------------------
+const TIER_COLORS = {
+  macro: '#4A90D9',
+  meso:  '#50C878',
+  micro: '#FF8C42',
+};
+
+// Tier lookup matching ontology.py NODE_TIER
+const NODE_TIER = {
+  Workspace: 'macro', Project: 'macro', Service: 'macro',
+  Resource: 'macro', ExternalAPI: 'macro',
+  Module: 'meso', File: 'meso', Router: 'meso',
+  Collection: 'meso', InfraConfig: 'meso', Queue: 'meso',
+  Endpoint: 'micro', Function: 'micro', AsyncHandler: 'micro',
+  DataModel: 'micro', Event: 'micro', Middleware: 'micro',
+  TypeDef: 'micro', CacheKey: 'micro', EnvVar: 'micro',
+};
+
+// Node category sets (from ontology.py)
+const INFRA_TYPES = new Set(['Resource', 'InfraConfig', 'Queue', 'EnvVar']);
+const DATA_TYPES  = new Set(['DataModel', 'Collection', 'TypeDef', 'CacheKey']);
+// Everything else is "code" category -> circle
+
+// Edge groups matching ontology.py EDGE_GROUPS
+const EDGE_GROUPS = {
+  structural:    ['CONTAINS', 'DEFINES', 'IMPORTS', 'IMPLEMENTS', 'INHERITS'],
+  data_flow:     ['READS_DB', 'WRITES_DB', 'MIGRATES'],
+  communication: ['CALLS_API', 'CALLS_SERVICE', 'CALLS', 'WEBHOOK_SEND', 'WEBHOOK_RECEIVE'],
+  event_async:   ['EMITS_EVENT', 'CONSUMES_EVENT', 'ENQUEUES', 'DEQUEUES', 'SCHEDULES'],
+  caching:       ['CACHE_READ', 'CACHE_WRITE'],
+  routing:       ['ROUTES_TO', 'INTERCEPTS', 'VALIDATES', 'AUTHENTICATES'],
+  config_deploy: ['DEPENDS_ON', 'DEPLOYED_BY', 'CONFIGURES'],
+  quality:       ['TESTS'],
+};
+
+// Reverse lookup: edge type -> group
+const EDGE_TYPE_TO_GROUP = {};
+for (const [group, types] of Object.entries(EDGE_GROUPS)) {
+  for (const t of types) EDGE_TYPE_TO_GROUP[t] = group;
+}
+
+// Edge group colors
+const EDGE_GROUP_COLORS = {
+  structural:    '#888888',
+  data_flow:     '#4A90D9',
+  communication: '#4A90D9',
+  event_async:   '#9B59B6',
+  caching:       '#E67E22',
+  routing:       '#2ECC71',
+  config_deploy: '#888888',
+  quality:       '#F39C12',
+};
+
+// -----------------------------------------------------------------------
+// State
+// -----------------------------------------------------------------------
+let rawData = { nodes: [], edges: [] };
+let simulation = null;
+let svg, g, linkG, nodeG;
+let selectedNodeId = null;
+
+const filters = {
+  tier:      { macro: true, meso: true, micro: true },
+  nodeType:  {},
+  edgeGroup: {},
+  search:    '',
+};
+
+// -----------------------------------------------------------------------
+// Load data
+// -----------------------------------------------------------------------
+async function loadData() {
+  try {
+    const resp = await fetch('/api/graph');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    rawData = await resp.json();
+  } catch (err) {
+    console.error('Failed to load graph data:', err);
+    rawData = { nodes: [], edges: [] };
+    document.getElementById('stats-display').textContent = 'Error loading data';
+    return;
+  }
+
+  // Normalize: ensure tier field is set from NODE_TIER if missing
+  for (const node of rawData.nodes) {
+    if (!node.tier) {
+      node.tier = NODE_TIER[node.type] || 'micro';
+    }
+  }
+
+  // Initialize filters with all observed types checked
+  const nodeTypes = new Set(rawData.nodes.map(n => n.type));
+  for (const t of nodeTypes) filters.nodeType[t] = true;
+  for (const g of Object.keys(EDGE_GROUPS)) filters.edgeGroup[g] = true;
+
+  buildFilterUI();
+  initGraph();
+  updateGraph();
+  updateStats();
+}
+
+// -----------------------------------------------------------------------
+// Filter UI
+// -----------------------------------------------------------------------
+function buildFilterUI() {
+  // Tier filters
+  const tierContainer = document.getElementById('tier-filters');
+  tierContainer.innerHTML = '';
+  for (const [tier, color] of Object.entries(TIER_COLORS)) {
+    const lbl = document.createElement('label');
+    lbl.innerHTML = `
+      <input type="checkbox" data-filter="tier" data-value="${tier}" ${filters.tier[tier] ? 'checked' : ''}>
+      <span class="color-dot" style="background:${color}"></span>
+      ${tier}
+    `;
+    lbl.querySelector('input').addEventListener('change', onFilterChange);
+    tierContainer.appendChild(lbl);
+  }
+
+  // Node type filters
+  const ntContainer = document.getElementById('node-type-filters');
+  ntContainer.innerHTML = '';
+  const sortedTypes = Object.keys(filters.nodeType).sort();
+  for (const t of sortedTypes) {
+    const tier = NODE_TIER[t] || 'micro';
+    const color = TIER_COLORS[tier];
+    const lbl = document.createElement('label');
+    lbl.innerHTML = `
+      <input type="checkbox" data-filter="nodeType" data-value="${t}" ${filters.nodeType[t] ? 'checked' : ''}>
+      <span class="color-dot" style="background:${color}"></span>
+      ${t}
+    `;
+    lbl.querySelector('input').addEventListener('change', onFilterChange);
+    ntContainer.appendChild(lbl);
+  }
+
+  // Edge group filters
+  const egContainer = document.getElementById('edge-group-filters');
+  egContainer.innerHTML = '';
+  for (const [group, color] of Object.entries(EDGE_GROUP_COLORS)) {
+    const lbl = document.createElement('label');
+    lbl.innerHTML = `
+      <input type="checkbox" data-filter="edgeGroup" data-value="${group}" ${filters.edgeGroup[group] ? 'checked' : ''}>
+      <span class="color-dot" style="background:${color}"></span>
+      ${group.replace(/_/g, ' ')}
+    `;
+    lbl.querySelector('input').addEventListener('change', onFilterChange);
+    egContainer.appendChild(lbl);
+  }
+}
+
+function onFilterChange(e) {
+  const filterType = e.target.dataset.filter;
+  const value = e.target.dataset.value;
+  filters[filterType][value] = e.target.checked;
+  updateGraph();
+  updateStats();
+}
+
+function toggleAll(filterType, state) {
+  for (const key of Object.keys(filters[filterType])) {
+    filters[filterType][key] = state;
+  }
+  // Update checkboxes
+  document.querySelectorAll(`input[data-filter="${filterType}"]`).forEach(cb => {
+    cb.checked = state;
+  });
+  updateGraph();
+  updateStats();
+}
+
+// Search
+document.getElementById('search-box').addEventListener('input', (e) => {
+  filters.search = e.target.value.toLowerCase().trim();
+  updateGraph();
+});
+
+// -----------------------------------------------------------------------
+// Graph init
+// -----------------------------------------------------------------------
+function initGraph() {
+  const container = document.getElementById('graph-container');
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+
+  svg = d3.select('#graph-container')
+    .append('svg')
+    .attr('width', width)
+    .attr('height', height);
+
+  // Arrow marker definitions
+  const defs = svg.append('defs');
+
+  for (const [group, color] of Object.entries(EDGE_GROUP_COLORS)) {
+    defs.append('marker')
+      .attr('id', `arrow-${group}`)
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 20)
+      .attr('refY', 0)
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .attr('orient', 'auto')
+      .append('path')
+        .attr('d', 'M0,-4L8,0L0,4')
+        .attr('fill', color);
+  }
+
+  // Root group for zoom/pan
+  g = svg.append('g');
+  linkG = g.append('g').attr('class', 'links');
+  nodeG = g.append('g').attr('class', 'nodes');
+
+  // Zoom behavior
+  const zoom = d3.zoom()
+    .scaleExtent([0.1, 6])
+    .on('zoom', (event) => {
+      g.attr('transform', event.transform);
+    });
+  svg.call(zoom);
+
+  // Initialize simulation
+  simulation = d3.forceSimulation()
+    .force('link', d3.forceLink().id(d => d.id).distance(80))
+    .force('charge', d3.forceManyBody().strength(-200))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(20))
+    .on('tick', ticked);
+}
+
+// -----------------------------------------------------------------------
+// Filtering logic
+// -----------------------------------------------------------------------
+function getFilteredData() {
+  const searchTerm = filters.search;
+
+  // Filter nodes
+  const filteredNodes = rawData.nodes.filter(n => {
+    const tier = n.tier || NODE_TIER[n.type] || 'micro';
+    if (!filters.tier[tier]) return false;
+    if (!filters.nodeType[n.type]) return false;
+    if (searchTerm && !n.name.toLowerCase().includes(searchTerm) &&
+        !n.id.toLowerCase().includes(searchTerm)) return false;
+    return true;
+  });
+
+  const nodeIdSet = new Set(filteredNodes.map(n => n.id));
+
+  // Filter edges
+  const filteredEdges = rawData.edges.filter(e => {
+    const srcId = e.source_id || (e.source && e.source.id) || e.source;
+    const tgtId = e.target_id || (e.target && e.target.id) || e.target;
+    if (!nodeIdSet.has(srcId) || !nodeIdSet.has(tgtId)) return false;
+    const group = EDGE_TYPE_TO_GROUP[e.type];
+    if (group && !filters.edgeGroup[group]) return false;
+    return true;
+  });
+
+  return { nodes: filteredNodes, edges: filteredEdges };
+}
+
+// -----------------------------------------------------------------------
+// Compute edge counts for node sizing
+// -----------------------------------------------------------------------
+function computeEdgeCounts(nodes, edges) {
+  const counts = {};
+  for (const n of nodes) counts[n.id] = 0;
+  for (const e of edges) {
+    const src = e.source_id || e.source;
+    const tgt = e.target_id || e.target;
+    if (counts[src] !== undefined) counts[src]++;
+    if (counts[tgt] !== undefined) counts[tgt]++;
+  }
+  return counts;
+}
+
+// -----------------------------------------------------------------------
+// Node shape: returns SVG path data
+// -----------------------------------------------------------------------
+function nodeShape(d, r) {
+  const type = d.type;
+  if (INFRA_TYPES.has(type)) {
+    // Diamond
+    return `M0,${-r} L${r},0 L0,${r} L${-r},0 Z`;
+  } else if (DATA_TYPES.has(type)) {
+    // Square (rounded-ish)
+    const s = r * 0.8;
+    return `M${-s},${-s} L${s},${-s} L${s},${s} L${-s},${s} Z`;
+  } else {
+    // Circle approximation via path (12-sided polygon for consistency)
+    const pts = [];
+    for (let i = 0; i < 12; i++) {
+      const a = (Math.PI * 2 * i) / 12;
+      pts.push(`${r * Math.cos(a)},${r * Math.sin(a)}`);
+    }
+    return `M${pts.join('L')}Z`;
+  }
+}
+
+// -----------------------------------------------------------------------
+// Update graph rendering
+// -----------------------------------------------------------------------
+function updateGraph() {
+  const { nodes, edges } = getFilteredData();
+  const edgeCounts = computeEdgeCounts(nodes, edges);
+
+  // Prepare links (must use source/target for D3)
+  const links = edges.map(e => ({
+    source: e.source_id || e.source,
+    target: e.target_id || e.target,
+    type: e.type,
+    description: e.description || '',
+    confidence: e.confidence,
+    is_stale: e.is_stale,
+    group: EDGE_TYPE_TO_GROUP[e.type] || 'structural',
+  }));
+
+  // --- Edges ---
+  const edgeGroups = linkG.selectAll('.edge-group')
+    .data(links, d => `${d.source}-${d.target}-${d.type}`);
+
+  edgeGroups.exit().remove();
+
+  const edgeEnter = edgeGroups.enter()
+    .append('g')
+    .attr('class', 'edge-group');
+
+  edgeEnter.append('line')
+    .attr('class', 'edge-line');
+
+  edgeEnter.append('text')
+    .attr('class', 'edge-label');
+
+  const edgeMerged = edgeEnter.merge(edgeGroups);
+
+  edgeMerged.select('.edge-line')
+    .attr('stroke', d => EDGE_GROUP_COLORS[d.group] || '#888')
+    .attr('stroke-dasharray', d => d.is_stale ? '4,3' : null)
+    .attr('marker-end', d => `url(#arrow-${d.group})`);
+
+  edgeMerged.select('.edge-label')
+    .text(d => d.type);
+
+  // --- Nodes ---
+  const nodeGroups = nodeG.selectAll('.node-group')
+    .data(nodes, d => d.id);
+
+  nodeGroups.exit().remove();
+
+  const nodeEnter = nodeGroups.enter()
+    .append('g')
+    .attr('class', 'node-group');
+
+  nodeEnter.append('path')
+    .attr('class', 'node-shape');
+
+  nodeEnter.append('text')
+    .attr('class', 'node-label')
+    .attr('dy', d => {
+      const r = nodeRadius(edgeCounts[d.id] || 0);
+      return r + 12;
+    });
+
+  // Drag
+  nodeEnter.call(d3.drag()
+    .on('start', dragStarted)
+    .on('drag', dragged)
+    .on('end', dragEnded));
+
+  // Click
+  nodeEnter.on('click', (event, d) => {
+    event.stopPropagation();
+    selectNode(d);
+  });
+
+  // Hover tooltip
+  nodeEnter
+    .on('mouseover', showTooltip)
+    .on('mousemove', moveTooltip)
+    .on('mouseout', hideTooltip);
+
+  const nodeMerged = nodeEnter.merge(nodeGroups);
+
+  nodeMerged.select('.node-shape')
+    .attr('d', d => {
+      const r = nodeRadius(edgeCounts[d.id] || 0);
+      return nodeShape(d, r);
+    })
+    .attr('fill', d => {
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      return TIER_COLORS[tier] || '#FF8C42';
+    })
+    .attr('stroke', d => d.is_stale ? '#e74c3c' : 'rgba(255,255,255,0.2)')
+    .attr('stroke-width', d => d.is_stale ? 2 : 1)
+    .attr('stroke-dasharray', d => d.is_stale ? '4,2' : null)
+    .attr('opacity', d => {
+      if (filters.search && !d.name.toLowerCase().includes(filters.search) &&
+          !d.id.toLowerCase().includes(filters.search)) return 0.3;
+      return 0.85;
+    });
+
+  nodeMerged.select('.node-label')
+    .text(d => truncate(d.name, 18))
+    .attr('dy', d => {
+      const r = nodeRadius(edgeCounts[d.id] || 0);
+      return r + 12;
+    });
+
+  // Update selected highlight
+  nodeMerged.classed('node-selected', d => d.id === selectedNodeId);
+
+  // Restart simulation
+  simulation.nodes(nodes);
+  simulation.force('link').links(links);
+  simulation.alpha(0.6).restart();
+}
+
+function nodeRadius(edgeCount) {
+  return Math.max(6, Math.min(20, 6 + edgeCount * 1.5));
+}
+
+function truncate(str, len) {
+  if (!str) return '';
+  return str.length > len ? str.substring(0, len - 1) + '\u2026' : str;
+}
+
+// -----------------------------------------------------------------------
+// Simulation tick
+// -----------------------------------------------------------------------
+function ticked() {
+  linkG.selectAll('.edge-group').each(function(d) {
+    const group = d3.select(this);
+    group.select('.edge-line')
+      .attr('x1', d.source.x)
+      .attr('y1', d.source.y)
+      .attr('x2', d.target.x)
+      .attr('y2', d.target.y);
+    group.select('.edge-label')
+      .attr('x', (d.source.x + d.target.x) / 2)
+      .attr('y', (d.source.y + d.target.y) / 2 - 4);
+  });
+
+  nodeG.selectAll('.node-group')
+    .attr('transform', d => `translate(${d.x},${d.y})`);
+}
+
+// -----------------------------------------------------------------------
+// Drag handlers
+// -----------------------------------------------------------------------
+function dragStarted(event, d) {
+  if (!event.active) simulation.alphaTarget(0.3).restart();
+  d.fx = d.x;
+  d.fy = d.y;
+}
+
+function dragged(event, d) {
+  d.fx = event.x;
+  d.fy = event.y;
+}
+
+function dragEnded(event, d) {
+  if (!event.active) simulation.alphaTarget(0);
+  d.fx = null;
+  d.fy = null;
+}
+
+// -----------------------------------------------------------------------
+// Tooltip
+// -----------------------------------------------------------------------
+const tooltipEl = document.getElementById('tooltip');
+
+function showTooltip(event, d) {
+  const tier = d.tier || NODE_TIER[d.type] || 'micro';
+  tooltipEl.innerHTML = `
+    <div class="tt-name">${d.name}</div>
+    <div class="tt-type">${d.type} (${tier})</div>
+  `;
+  tooltipEl.style.display = 'block';
+  moveTooltip(event);
+}
+
+function moveTooltip(event) {
+  const container = document.getElementById('graph-container');
+  const rect = container.getBoundingClientRect();
+  tooltipEl.style.left = (event.clientX - rect.left + 12) + 'px';
+  tooltipEl.style.top = (event.clientY - rect.top - 10) + 'px';
+}
+
+function hideTooltip() {
+  tooltipEl.style.display = 'none';
+}
+
+// -----------------------------------------------------------------------
+// Node selection / detail panel
+// -----------------------------------------------------------------------
+function selectNode(d) {
+  selectedNodeId = d.id;
+
+  // Update highlight
+  nodeG.selectAll('.node-group').classed('node-selected', n => n.id === d.id);
+
+  const panel = document.getElementById('detail-panel');
+  panel.classList.remove('empty');
+
+  const tier = d.tier || NODE_TIER[d.type] || 'micro';
+  const tags = (d.tags || []).map(t => `<span class="tag-badge">${t}</span>`).join(' ') || '-';
+
+  // Count edges for this node from raw data
+  const inEdges = rawData.edges.filter(e => (e.target_id || e.target) === d.id);
+  const outEdges = rawData.edges.filter(e => (e.source_id || e.source) === d.id);
+
+  panel.innerHTML = `
+    <h3>${d.name}</h3>
+    <div class="detail-grid">
+      <span class="label">ID</span><span class="value">${d.id}</span>
+      <span class="label">Type</span><span class="value">${d.type}</span>
+      <span class="label">Tier</span><span class="value" style="color:${TIER_COLORS[tier]}">${tier}</span>
+      <span class="label">Confidence</span><span class="value">${(d.confidence * 100).toFixed(0)}%</span>
+      <span class="label">Provenance</span><span class="value">${d.provenance || '-'}</span>
+      <span class="label">Language</span><span class="value">${d.language || '-'}</span>
+      <span class="label">Stale</span><span class="value" style="color:${d.is_stale ? '#e74c3c' : '#2ecc71'}">${d.is_stale ? 'Yes' : 'No'}</span>
+      <span class="label">Version</span><span class="value">${d.version || 1}</span>
+      <span class="label">Edges In</span><span class="value">${inEdges.length}</span>
+      <span class="label">Edges Out</span><span class="value">${outEdges.length}</span>
+      <span class="label">Tags</span><span class="value">${tags}</span>
+      <span class="label">Description</span><span class="value">${d.description || '-'}</span>
+    </div>
+  `;
+}
+
+// Click on background to deselect
+document.getElementById('graph-container').addEventListener('click', () => {
+  selectedNodeId = null;
+  nodeG.selectAll('.node-group').classed('node-selected', false);
+  const panel = document.getElementById('detail-panel');
+  panel.classList.add('empty');
+  panel.textContent = 'Click a node to see details';
+});
+
+// -----------------------------------------------------------------------
+// Stats display
+// -----------------------------------------------------------------------
+function updateStats() {
+  const { nodes, edges } = getFilteredData();
+  const total = rawData.nodes.length;
+  const display = document.getElementById('stats-display');
+  display.textContent = `${nodes.length} / ${total} nodes | ${edges.length} edges`;
+}
+
+// -----------------------------------------------------------------------
+// Window resize
+// -----------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  const container = document.getElementById('graph-container');
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  svg.attr('width', width).attr('height', height);
+  simulation.force('center', d3.forceCenter(width / 2, height / 2));
+  simulation.alpha(0.3).restart();
+});
+
+// -----------------------------------------------------------------------
+// Boot
+// -----------------------------------------------------------------------
+loadData();
+
+</script>
+</body>
+</html>
