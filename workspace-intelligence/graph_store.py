@@ -7,7 +7,7 @@ Provides CRUD operations for nodes and edges.
 
 import json
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 import networkx as nx
 
 from ontology import (
@@ -335,6 +335,146 @@ class GraphStore:
             depth=max_depth,
             total_nodes_in_scope=len(all_node_ids),
         )
+
+    # =========================================================================
+    # SEARCH & ANALYSIS
+    # =========================================================================
+
+    def search_nodes(
+        self,
+        query: str,
+        type_filter: Optional[NodeType] = None,
+        tag_filter: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[GraphNode]:
+        """
+        Case-insensitive substring search across node name and description.
+
+        Args:
+            query: Substring to search for in name and description.
+            type_filter: Optional filter by node type.
+            tag_filter: Optional filter by tag.
+            limit: Maximum number of results to return.
+
+        Returns:
+            Matching nodes sorted by confidence (highest first).
+        """
+        query_lower = query.lower()
+        results = []
+        for node in self._nodes.values():
+            # Apply type filter
+            if type_filter is not None and node.type != type_filter:
+                continue
+            # Apply tag filter
+            if tag_filter is not None and tag_filter not in node.tags:
+                continue
+            # Substring match on name or description
+            name_match = query_lower in node.name.lower()
+            desc_match = node.description and query_lower in node.description.lower()
+            if name_match or desc_match:
+                results.append(node)
+        # Sort by confidence descending
+        results.sort(key=lambda n: n.confidence, reverse=True)
+        return results[:limit]
+
+    def shortest_path(self, source_id: str, target_id: str) -> List[str]:
+        """
+        Find the shortest path between two nodes using NetworkX.
+
+        Args:
+            source_id: Starting node ID.
+            target_id: Ending node ID.
+
+        Returns:
+            List of node IDs in the path, or empty list if no path exists.
+        """
+        try:
+            return nx.shortest_path(self.graph, source_id, target_id)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return []
+
+    def graph_diff(self, other: "GraphStore") -> Dict:
+        """
+        Compare this graph with another GraphStore instance.
+
+        A node is considered "modified" if its source_hash or version changed.
+
+        Returns:
+            Dict with keys: added_nodes, removed_nodes, modified_nodes,
+            added_edges, removed_edges.
+        """
+        self_node_ids = set(self._nodes.keys())
+        other_node_ids = set(other._nodes.keys())
+
+        added_nodes = list(other_node_ids - self_node_ids)
+        removed_nodes = list(self_node_ids - other_node_ids)
+
+        modified_nodes = []
+        for nid in self_node_ids & other_node_ids:
+            self_node = self._nodes[nid]
+            other_node = other._nodes[nid]
+            if (self_node.source_hash != other_node.source_hash
+                    or self_node.version != other_node.version):
+                modified_nodes.append(nid)
+
+        self_edge_keys = set(self._edges.keys())
+        other_edge_keys = set(other._edges.keys())
+
+        added_edges = list(other_edge_keys - self_edge_keys)
+        removed_edges = list(self_edge_keys - other_edge_keys)
+
+        return {
+            "added_nodes": added_nodes,
+            "removed_nodes": removed_nodes,
+            "modified_nodes": modified_nodes,
+            "added_edges": added_edges,
+            "removed_edges": removed_edges,
+        }
+
+    def filter_by_confidence(self, min_confidence: float) -> List[GraphNode]:
+        """
+        Return all nodes with confidence >= min_confidence.
+
+        Sorted by confidence descending.
+        """
+        results = [n for n in self._nodes.values() if n.confidence >= min_confidence]
+        results.sort(key=lambda n: n.confidence, reverse=True)
+        return results
+
+    def get_connected_component(self, node_id: str) -> Set[str]:
+        """
+        Return all node IDs in the same connected component (ignoring edge direction).
+
+        Uses nx.node_connected_component on an undirected copy of the graph.
+        """
+        undirected = self.graph.to_undirected()
+        try:
+            return nx.node_connected_component(undirected, node_id)
+        except nx.NetworkXError:
+            return set()
+
+    def find_orphans(self) -> List[GraphNode]:
+        """
+        Find nodes with no edges at all (no incoming or outgoing).
+
+        Excludes WORKSPACE and PROJECT nodes since they are naturally root nodes.
+        """
+        excluded_types = {NodeType.WORKSPACE, NodeType.PROJECT}
+        orphans = []
+        for node in self._nodes.values():
+            if node.type in excluded_types:
+                continue
+            if self.graph.degree(node.id) == 0:
+                orphans.append(node)
+        return orphans
+
+    def get_all_nodes(self) -> List[GraphNode]:
+        """Return all nodes in the graph."""
+        return list(self._nodes.values())
+
+    def get_all_edges(self) -> List[GraphEdge]:
+        """Return all edges in the graph."""
+        return list(self._edges.values())
 
     # =========================================================================
     # PERSISTENCE
