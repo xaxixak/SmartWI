@@ -521,7 +521,7 @@
     <h2>&#128269; Scan a New Folder</h2>
 
     <div class="instructions">
-      <strong>How it works:</strong> Click "Browse..." to pick a folder, use Quick Select, or browse below. Then click <strong>Scan This Folder</strong>.
+      <strong>How it works:</strong> Click "Browse..." for native Windows folder picker, use Quick Select for common folders, or paste path below. Then click <strong>Scan This Folder</strong>.
     </div>
 
     <!-- Native Folder Picker -->
@@ -529,7 +529,7 @@
       <button class="btn-browse-folder" onclick="openFolderPicker()">
         📂 Browse for Folder...
       </button>
-      <span id="picker-status" style="margin-left: 12px; font-size: 13px; color: #8b949e;">Click to open Windows folder picker</span>
+      <span id="picker-status" style="margin-left: 12px; font-size: 13px; color: #8b949e;">Native Windows folder picker - just click and select!</span>
     </div>
 
     <!-- Quick Select -->
@@ -745,71 +745,37 @@ function goToPath() {
   if (path) browse(path);
 }
 
-// Native folder picker using File System Access API
+// Native Windows folder picker (uses Python tkinter on backend)
 async function openFolderPicker() {
   const statusEl = document.getElementById('picker-status');
 
   try {
-    // Check if the API is supported (Chrome/Edge 86+)
-    if (!('showDirectoryPicker' in window)) {
-      statusEl.textContent = '❌ Not supported - use Chrome/Edge browser';
-      statusEl.style.color = '#f85149';
-      alert('Native folder picker requires Chrome or Edge browser.\n\nPlease use Quick Select or paste the folder path instead.');
-      return;
-    }
-
     statusEl.textContent = 'Opening folder picker...';
     statusEl.style.color = '#58a6ff';
 
-    // Open native folder picker dialog
-    const dirHandle = await window.showDirectoryPicker({
-      mode: 'read'
-    });
+    // Call backend endpoint that shows native Windows dialog
+    const resp = await fetch('/api/pick-folder');
+    const result = await resp.json();
 
-    // Get the full path (requires permission)
-    // Note: getPath() may not work in all browsers, so we'll use a workaround
-    let folderPath = dirHandle.name;
-
-    // Try to get full path (experimental API)
-    if (dirHandle.resolve) {
-      try {
-        const resolved = await dirHandle.resolve(dirHandle);
-        if (resolved && resolved.length > 0) {
-          folderPath = resolved.join('\\');
-        }
-      } catch (e) {
-        console.log('Could not resolve full path:', e);
-      }
-    }
-
-    // For Windows, we need the full path - ask user to paste it
-    const userPath = prompt(
-      `Selected folder: ${dirHandle.name}\n\n` +
-      `Please paste the FULL PATH to this folder:\n` +
-      `(e.g., D:\\Work\\Ai Dev\\MOB\\test-shop)`,
-      ''
-    );
-
-    if (userPath && userPath.trim()) {
-      statusEl.textContent = `✓ Selected: ${dirHandle.name}`;
+    if (result.success && result.path) {
+      const folderName = result.path.split(/[\\\/]/).pop();
+      statusEl.textContent = `✓ Selected: ${folderName}`;
       statusEl.style.color = '#3fb950';
 
-      // Browse to the folder
-      await browse(userPath.trim());
-    } else {
-      statusEl.textContent = 'Cancelled';
+      // Browse to the folder automatically
+      await browse(result.path);
+    } else if (result.message) {
+      statusEl.textContent = result.message;
       statusEl.style.color = '#8b949e';
+    } else if (result.error) {
+      statusEl.textContent = '❌ Error: ' + result.error;
+      statusEl.style.color = '#f85149';
     }
 
   } catch (e) {
-    if (e.name === 'AbortError') {
-      statusEl.textContent = 'Cancelled';
-      statusEl.style.color = '#8b949e';
-    } else {
-      console.error('Folder picker error:', e);
-      statusEl.textContent = '❌ Error: ' + e.message;
-      statusEl.style.color = '#f85149';
-    }
+    console.error('Folder picker error:', e);
+    statusEl.textContent = '❌ Error: ' + e.message;
+    statusEl.style.color = '#f85149';
   }
 }
 
