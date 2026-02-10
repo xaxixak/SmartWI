@@ -374,6 +374,24 @@
   .log-stream .log-info { color: #58a6ff; }
   .log-stream .log-success { color: #3fb950; }
   .log-stream .log-error { color: #f85149; }
+
+  /* Quick Select Buttons */
+  .quick-btn {
+    background: #1c2129;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.15s;
+  }
+
+  .quick-btn:hover {
+    background: #238636;
+    border-color: #238636;
+    transform: translateY(-1px);
+  }
 </style>
 </head>
 <body>
@@ -484,13 +502,22 @@
     <h2>&#128269; Scan a New Folder</h2>
 
     <div class="instructions">
-      <strong>How it works:</strong> Browse to any code project folder below, then click
-      <strong>Scan This Folder</strong>. The tool will analyze all the code and create
-      a visual map of how everything connects.
+      <strong>How it works:</strong> Use Quick Select for common folders, paste a path, or browse below. Then click <strong>Scan This Folder</strong>.
     </div>
 
-    <div class="browser-path" style="margin-top: 16px;">
-      <input type="text" id="path-input" placeholder="Type a folder path or browse below...">
+    <!-- Quick Select -->
+    <div class="quick-select" style="margin-top: 16px;">
+      <label style="font-size: 13px; color: #e6edf3; margin-bottom: 8px; display: block;">⚡ Quick Select:</label>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button class="quick-btn" onclick="quickSelect('../test-shop')">📁 test-shop</button>
+        <button class="quick-btn" onclick="quickSelect('../oracle-v2')">📁 oracle-v2</button>
+        <button class="quick-btn" onclick="quickSelect('.')">📁 workspace-intelligence</button>
+        <button class="quick-btn" onclick="quickSelect('..')">📂 Smart RPL (parent)</button>
+      </div>
+    </div>
+
+    <div class="browser-path" style="margin-top: 12px;">
+      <input type="text" id="path-input" placeholder="Or paste full path here (e.g., D:\Projects\my-app)">
       <button onclick="goToPath()">Go</button>
     </div>
 
@@ -689,6 +716,42 @@ function selectFolder(path, name) {
 function goToPath() {
   const path = document.getElementById('path-input').value.trim();
   if (path) browse(path);
+}
+
+async function quickSelect(relativePath) {
+  try {
+    // First browse to get current path, then resolve relative path
+    const resp = await fetch('/api/browse');
+    const data = await resp.json();
+
+    if (data.current) {
+      // Build the target path
+      let targetPath;
+      if (relativePath === '.') {
+        // Current directory (workspace-intelligence)
+        targetPath = data.current;
+      } else if (relativePath === '..') {
+        // Parent directory
+        const parts = data.current.split(/[\\\/]/);
+        parts.pop();
+        targetPath = parts.join('\\');
+      } else if (relativePath.startsWith('../') || relativePath.startsWith('..\\')) {
+        // Relative path (e.g., ../test-shop)
+        const parts = data.current.split(/[\\\/]/);
+        parts.pop(); // Remove workspace-intelligence
+        const relParts = relativePath.split(/[\\\/]/).slice(1); // Remove ..
+        targetPath = parts.concat(relParts).join('\\');
+      } else {
+        targetPath = relativePath;
+      }
+
+      // Browse to the target path
+      await browse(targetPath);
+    }
+  } catch (e) {
+    console.error('Quick select failed:', e);
+    alert(`Could not navigate to ${relativePath}. Try pasting the full path instead.`);
+  }
 }
 
 // Handle Enter key in path input
