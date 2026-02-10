@@ -328,11 +328,17 @@ def cmd_watch(args: argparse.Namespace) -> None:
 
     import time
 
+    # Parse passes and debounce from arguments
+    passes = [p.strip() for p in args.passes.split(",")] if args.passes else ["treesitter", "patterns", "connections"]
+    debounce_ms = args.debounce if hasattr(args, "debounce") else 800
+
     print(f"{'='*60}")
     print(f"  Workspace Intelligence — Live Watcher")
     print(f"{'='*60}")
     print(f"  Workspace: {workspace_path}")
     print(f"  Graph:     {graph_path}")
+    print(f"  Passes:    {', '.join(passes)}")
+    print(f"  Debounce:  {debounce_ms}ms")
     print(f"  Watching for file changes...")
     print(f"  Press Ctrl+C to stop.\n")
 
@@ -340,6 +346,8 @@ def cmd_watch(args: argparse.Namespace) -> None:
         workspace_path=workspace_path,
         graph_path=graph_path,
         on_update=on_update,
+        debounce_ms=debounce_ms,
+        passes=passes,
     )
 
     if args.viewer:
@@ -1050,6 +1058,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument(
         "--port", type=int, default=8080,
         help="Viewer port (default: 8080, only used with --viewer)",
+    )
+    p_watch.add_argument(
+        "--passes",
+        default="treesitter,patterns,connections",
+        help="Comma-separated passes for incremental updates (default: treesitter,patterns,connections)",
+    )
+    p_watch.add_argument(
+        "--debounce", type=int, default=800,
+        help="Debounce delay in milliseconds (default: 800)",
     )
     p_watch.add_argument(
         "-v", "--verbose", action="store_true",

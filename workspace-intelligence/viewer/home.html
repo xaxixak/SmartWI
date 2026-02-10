@@ -119,6 +119,261 @@
     padding: 16px; margin-top: 12px; font-size: 13px; color: #8b949e; line-height: 1.6;
   }
   .instructions strong { color: #e6edf3; }
+
+  /* Configuration Panel */
+  .config-section {
+    margin-bottom: 24px;
+  }
+
+  .config-section h3 {
+    font-size: 14px;
+    margin-bottom: 12px;
+    color: #e6edf3;
+  }
+
+  /* Pass Selection Grid */
+  .pass-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+  }
+
+  .pass-card {
+    background: #0d1117;
+    border: 2px solid #30363d;
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    gap: 10px;
+  }
+
+  .pass-card:hover:not(.disabled) {
+    border-color: #58a6ff;
+    background: #1c2129;
+  }
+
+  .pass-card.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .pass-card input[type="checkbox"] {
+    margin-top: 2px;
+    cursor: pointer;
+  }
+
+  .pass-info strong {
+    display: block;
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+
+  .pass-info p {
+    font-size: 12px;
+    color: #8b949e;
+    margin: 4px 0 0 0;
+  }
+
+  .pass-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+
+  .pass-badge.free {
+    background: #238636;
+    color: #fff;
+  }
+
+  .pass-badge.paid {
+    background: #f85149;
+    color: #fff;
+  }
+
+  /* Toggle Switch */
+  .toggle-switch {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+  }
+
+  .toggle-switch input {
+    display: none;
+  }
+
+  .slider {
+    position: relative;
+    width: 48px;
+    height: 24px;
+    background: #30363d;
+    border-radius: 24px;
+    transition: 0.3s;
+  }
+
+  .slider:before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    top: 3px;
+    background: #8b949e;
+    border-radius: 50%;
+    transition: 0.3s;
+  }
+
+  .toggle-switch input:checked + .slider {
+    background: #238636;
+  }
+
+  .toggle-switch input:checked + .slider:before {
+    transform: translateX(24px);
+    background: #fff;
+  }
+
+  .toggle-label {
+    font-size: 14px;
+    color: #e6edf3;
+  }
+
+  /* Debounce Slider */
+  .debounce-control {
+    margin-top: 16px;
+    padding: 12px;
+    background: #0d1117;
+    border-radius: 6px;
+  }
+
+  .debounce-control label {
+    font-size: 13px;
+    display: block;
+    margin-bottom: 8px;
+    color: #e6edf3;
+  }
+
+  .debounce-control input[type="range"] {
+    width: 100%;
+    accent-color: #58a6ff;
+  }
+
+  .help-text {
+    font-size: 11px;
+    color: #8b949e;
+    margin-top: 6px;
+  }
+
+  /* Estimate Panel */
+  .estimate-panel {
+    display: flex;
+    gap: 24px;
+    padding: 12px 16px;
+    background: #1c2129;
+    border-radius: 6px;
+    margin-top: 16px;
+  }
+
+  .estimate-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+
+  .estimate-label {
+    color: #8b949e;
+  }
+
+  .cost-free {
+    color: #3fb950;
+    font-weight: 600;
+  }
+
+  .cost-paid {
+    color: #f85149;
+    font-weight: 600;
+  }
+
+  /* Cancel Button */
+  .btn-cancel {
+    background: #da3633;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 24px;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+
+  .btn-cancel:hover {
+    background: #f85149;
+  }
+
+  /* Progress Bar */
+  .progress-container {
+    margin-top: 16px;
+    padding: 16px;
+    background: #1c2129;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+  }
+
+  .progress-bar {
+    width: 100%;
+    height: 8px;
+    background: #30363d;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #58a6ff, #79c0ff);
+    width: 0%;
+    transition: width 0.3s;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+
+  .progress-details {
+    font-size: 13px;
+    color: #8b949e;
+    margin-bottom: 8px;
+  }
+
+  /* Log Stream */
+  .log-stream {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 8px;
+    font-family: 'Consolas', monospace;
+    font-size: 11px;
+    color: #8b949e;
+    line-height: 1.4;
+  }
+
+  .log-stream .log-line {
+    margin: 2px 0;
+  }
+
+  .log-stream .log-info { color: #58a6ff; }
+  .log-stream .log-success { color: #3fb950; }
+  .log-stream .log-error { color: #f85149; }
 </style>
 </head>
 <body>
@@ -136,6 +391,92 @@
     <ul class="graph-list" id="graph-list">
       <li class="empty">Loading...</li>
     </ul>
+  </div>
+
+  <!-- Scan Configuration -->
+  <div class="card">
+    <h2>⚙️ Scan Configuration</h2>
+
+    <!-- Pass Selection -->
+    <div class="config-section">
+      <h3>Select Pipeline Passes</h3>
+      <div class="pass-grid">
+        <label class="pass-card">
+          <input type="checkbox" name="passes" value="scan" checked disabled>
+          <div class="pass-info">
+            <strong>🔍 Scan</strong>
+            <span class="pass-badge free">FREE</span>
+            <p>Discover projects & file structure</p>
+          </div>
+        </label>
+
+        <label class="pass-card">
+          <input type="checkbox" name="passes" value="treesitter" checked>
+          <div class="pass-info">
+            <strong>🌳 Tree-sitter</strong>
+            <span class="pass-badge free">FREE</span>
+            <p>Extract AST (functions, classes, imports)</p>
+          </div>
+        </label>
+
+        <label class="pass-card">
+          <input type="checkbox" name="passes" value="patterns" checked>
+          <div class="pass-info">
+            <strong>🔎 Patterns</strong>
+            <span class="pass-badge free">FREE</span>
+            <p>Detect endpoints, models, events</p>
+          </div>
+        </label>
+
+        <label class="pass-card">
+          <input type="checkbox" name="passes" value="connections" checked>
+          <div class="pass-info">
+            <strong>🔗 Connections</strong>
+            <span class="pass-badge free">FREE</span>
+            <p>Extract calls, reads, writes, emits</p>
+          </div>
+        </label>
+
+        <label class="pass-card disabled">
+          <input type="checkbox" name="passes" value="llm" disabled>
+          <div class="pass-info">
+            <strong>🧠 LLM Enrichment</strong>
+            <span class="pass-badge paid">PAID ~$2</span>
+            <p>Semantic analysis (coming soon)</p>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <!-- Watch Mode Configuration -->
+    <div class="config-section">
+      <h3>Live Watch Mode</h3>
+      <div class="watch-config">
+        <label class="toggle-switch">
+          <input type="checkbox" id="enable-watch">
+          <span class="slider"></span>
+          <span class="toggle-label">Auto-update graph when files change</span>
+        </label>
+
+        <div class="debounce-control" id="debounce-section" style="display:none">
+          <label>Debounce Delay: <span id="debounce-value">800</span>ms</label>
+          <input type="range" id="debounce-slider" min="500" max="2000" step="100" value="800">
+          <p class="help-text">Wait time after last file change before updating</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Estimated Cost/Time -->
+    <div class="estimate-panel">
+      <div class="estimate-item">
+        <span class="estimate-label">Estimated Time:</span>
+        <span id="time-estimate">~10-30 seconds</span>
+      </div>
+      <div class="estimate-item">
+        <span class="estimate-label">Cost:</span>
+        <span id="cost-estimate" class="cost-free">FREE</span>
+      </div>
+    </div>
   </div>
 
   <!-- Scan new folder -->
@@ -161,18 +502,100 @@
 
     <div class="scan-area">
       <button class="btn-scan" id="btn-scan" onclick="scanFolder()" disabled>
-        Scan This Folder
+        🚀 Scan This Folder
+      </button>
+      <button class="btn-cancel" id="btn-cancel" onclick="cancelScan()" style="display:none">
+        ⛔ Cancel Scan
       </button>
       <span class="selected-path" id="selected-display">Select a folder above</span>
     </div>
 
     <div class="status" id="status"></div>
+
+    <!-- Progress Container -->
+    <div class="progress-container" id="progress-container" style="display:none">
+      <div class="progress-bar">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <div class="progress-details" id="progress-details">Starting scan...</div>
+      <div class="log-stream" id="log-stream"></div>
+    </div>
   </div>
 
 </div>
 
 <script>
 let selectedFolder = null;
+
+// Configuration state
+const scanConfig = {
+  passes: ['scan', 'treesitter', 'patterns', 'connections'],
+  watchEnabled: false,
+  debounceMs: 800,
+};
+
+// Initialize configuration panel
+function initConfigPanel() {
+  // Pass checkboxes
+  document.querySelectorAll('input[name="passes"]').forEach(cb => {
+    cb.addEventListener('change', updateScanConfig);
+  });
+
+  // Watch mode toggle
+  document.getElementById('enable-watch').addEventListener('change', (e) => {
+    scanConfig.watchEnabled = e.target.checked;
+    document.getElementById('debounce-section').style.display =
+      e.target.checked ? 'block' : 'none';
+    updateEstimates();
+  });
+
+  // Debounce slider
+  const slider = document.getElementById('debounce-slider');
+  const valueDisplay = document.getElementById('debounce-value');
+  slider.addEventListener('input', (e) => {
+    scanConfig.debounceMs = parseInt(e.target.value);
+    valueDisplay.textContent = e.target.value;
+  });
+
+  updateEstimates();
+}
+
+function updateScanConfig() {
+  scanConfig.passes = Array.from(
+    document.querySelectorAll('input[name="passes"]:checked')
+  ).map(cb => cb.value);
+  updateEstimates();
+}
+
+function updateEstimates() {
+  const timeEst = document.getElementById('time-estimate');
+  const costEst = document.getElementById('cost-estimate');
+
+  // Estimate based on selected passes
+  const hasLLM = scanConfig.passes.includes('llm');
+  const baseTime = scanConfig.passes.length * 5; // ~5s per pass
+
+  timeEst.textContent = `~${baseTime}-${baseTime * 2} seconds`;
+
+  if (hasLLM) {
+    costEst.textContent = '~$2';
+    costEst.className = 'cost-paid';
+  } else {
+    costEst.textContent = 'FREE';
+    costEst.className = 'cost-free';
+  }
+}
+
+// Cancel scan
+async function cancelScan() {
+  try {
+    await fetch('/api/scan-abort', { method: 'POST' });
+    const details = document.getElementById('progress-details');
+    if (details) details.textContent = 'Scan cancelled';
+  } catch (e) {
+    console.error('Failed to cancel scan:', e);
+  }
+}
 
 // Load existing graphs on page load
 async function loadGraphs() {
@@ -273,48 +696,92 @@ document.getElementById('path-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') goToPath();
 });
 
-// Scan folder
+// Enhanced scan folder with progress
 async function scanFolder() {
   if (!selectedFolder) return;
 
   const btn = document.getElementById('btn-scan');
+  const cancelBtn = document.getElementById('btn-cancel');
   const status = document.getElementById('status');
+  const progressContainer = document.getElementById('progress-container');
+  const progressFill = document.getElementById('progress-fill');
+  const progressDetails = document.getElementById('progress-details');
+  const logStream = document.getElementById('log-stream');
 
+  // Update UI
   btn.disabled = true;
   btn.textContent = 'Scanning...';
-  status.className = 'status loading';
-  status.innerHTML = '<span class="spinner"></span> Scanning folder... This may take a few seconds.';
+  cancelBtn.style.display = 'inline-block';
+  status.style.display = 'none';
+  progressContainer.style.display = 'block';
+  logStream.innerHTML = '';
+  progressFill.style.width = '0%';
+
+  // Start progress simulation
+  let progress = 0;
+  const progressInterval = setInterval(() => {
+    progress = Math.min(progress + Math.random() * 15, 95);
+    progressFill.style.width = progress + '%';
+  }, 500);
 
   try {
+    // Send scan request with config
     const resp = await fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folder: selectedFolder }),
+      body: JSON.stringify({
+        folder: selectedFolder,
+        passes: scanConfig.passes,
+        watchEnabled: scanConfig.watchEnabled,
+        debounceMs: scanConfig.debounceMs,
+      }),
     });
+
     const result = await resp.json();
 
+    clearInterval(progressInterval);
+    progressFill.style.width = '100%';
+
     if (result.success) {
-      status.className = 'status success';
-      status.innerHTML = `Done! Graph saved.<br><pre style="margin-top:8px;font-size:12px;white-space:pre-wrap;">${result.output || ''}</pre>`;
+      progressDetails.textContent = `Scan completed in ${result.duration_ms}ms!`;
+
+      // Show output in log stream
+      if (result.output) {
+        const lines = result.output.split('\n').slice(0, 20); // Show first 20 lines
+        lines.forEach(line => {
+          const div = document.createElement('div');
+          div.className = 'log-line log-success';
+          div.textContent = line;
+          logStream.appendChild(div);
+        });
+      }
 
       // Reload graphs list
       await loadGraphs();
 
-      // Auto-open viewer after 1 second
+      // Auto-open viewer after 1.5s
       setTimeout(() => {
         viewGraph(result.graph_path);
       }, 1500);
     } else {
-      status.className = 'status error';
-      status.textContent = result.error || 'Scan failed';
+      progressDetails.textContent = 'Scan failed!';
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'log-line log-error';
+      errorDiv.textContent = result.error || 'Unknown error';
+      logStream.appendChild(errorDiv);
     }
   } catch (e) {
-    status.className = 'status error';
-    status.textContent = 'Error: ' + e.message;
+    clearInterval(progressInterval);
+    progressDetails.textContent = 'Error: ' + e.message;
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'log-line log-error';
+    errorDiv.textContent = e.message;
+    logStream.appendChild(errorDiv);
   }
 
   btn.disabled = false;
-  btn.textContent = 'Scan This Folder';
+  btn.textContent = '🚀 Scan This Folder';
+  cancelBtn.style.display = 'none';
 }
 
 // View a graph
@@ -323,6 +790,7 @@ function viewGraph(graphPath) {
 }
 
 // Init
+initConfigPanel();
 loadGraphs();
 browse();
 </script>

@@ -272,6 +272,10 @@ body {
     <h1>Workspace Intelligence</h1>
     <input type="text" id="search-box" placeholder="Search nodes by name..." />
     <span class="toolbar-stats" id="stats-display">Loading...</span>
+    <div id="watch-status" style="display:none; margin-left: auto; gap: 10px; align-items: center;">
+      <span style="color:#3fb950; font-weight: 600; font-size: 14px;">● LIVE</span>
+      <button onclick="stopWatcher()" class="btn-stop-watch" style="background: #da3633; color: #fff; border: none; border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px;">Stop Watching</button>
+    </div>
   </div>
 
   <!-- Sidebar: filters + detail panel -->
@@ -922,6 +926,7 @@ function initLiveUpdates() {
     const data = JSON.parse(e.data);
     console.log('[LIVE] Graph updated:', data);
     _liveUpdateEnabled = true;
+    showWatchIndicator(true); // Show watch indicator when updates start coming
     showUpdateBanner(data);
     reloadGraph();
   });
@@ -931,6 +936,40 @@ function initLiveUpdates() {
       console.log('[LIVE] SSE not available');
     }
   };
+}
+
+function showWatchIndicator(visible) {
+  const indicator = document.getElementById('watch-status');
+  if (indicator) {
+    indicator.style.display = visible ? 'flex' : 'none';
+  }
+}
+
+async function stopWatcher() {
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const graphPath = urlParams.get('graph');
+
+    const resp = await fetch('/api/watch-stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph_path: graphPath })
+    });
+
+    const result = await resp.json();
+    if (result.success) {
+      showWatchIndicator(false);
+      console.log('[LIVE] Watcher stopped');
+
+      // Close SSE connection
+      if (_eventSource) {
+        _eventSource.close();
+        _eventSource = null;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to stop watcher:', e);
+  }
 }
 
 function showUpdateBanner(data) {

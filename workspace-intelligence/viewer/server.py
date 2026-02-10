@@ -36,6 +36,14 @@ GRAPHS_DIR.mkdir(exist_ok=True)
 _sse_clients: list = []  # list of queue.Queue, one per connected client
 _sse_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Active Processes and Watchers
+# ---------------------------------------------------------------------------
+_active_scans = {}     # folder_path -> subprocess.Popen
+_active_watchers = {}  # folder_path -> GraphWatcher instance
+_scans_lock = threading.Lock()
+_watchers_lock = threading.Lock()
+
 
 def broadcast_sse(event_type: str, data: dict) -> None:
     """Send an event to all connected SSE clients."""
@@ -113,7 +121,7 @@ def _browse_directory(path_str):
         return {"error": str(e)}
 
 
-def _run_scan(folder_path):
+def _run_scan(folder_path, passes=None, watch_enabled=False, debounce_ms=800):
     """Run the pipeline on a folder. Returns the graph JSON path."""
     folder = Path(folder_path).resolve()
     if not folder.is_dir():
@@ -125,26 +133,122 @@ def _run_scan(folder_path):
     cli_path = PROJECT_ROOT / "cli.py"
     cmd = [sys.executable, str(cli_path), "index", str(folder), "-o", str(output_path)]
 
+    # Add --passes flag if specified
+    if passes:
+        # Filter and join passes
+        passes_str = ",".join(passes)
+        cmd.extend(["--passes", passes_str])
+
     try:
-        result = subprocess.run(
+        start_time = time.time()
+
+        # Use Popen so we can track and cancel the process
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
-            timeout=120,
             cwd=str(PROJECT_ROOT),
         )
-        if result.returncode == 0:
-            return {
-                "success": True,
-                "graph_path": str(output_path),
-                "graph_name": graph_name,
-                "output": result.stdout + result.stderr,
-            }
-        else:
-            return {"error": f"Scan failed:\n{result.stderr}\n{result.stdout}"}
+
+        # Store process for cancellation
+        with _scans_lock:
+            _active_scans[str(folder)] = process
+
+        try:
+            stdout, stderr = process.communicate(timeout=120)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            if process.returncode == 0:
+                # Parse output for stats (optional)
+                output_text = stdout + stderr
+
+                return {
+                    "success": True,
+                    "graph_path": str(output_path),
+                    "graph_name": graph_name,
+                    "output": output_text,
+                    "duration_ms": duration_ms,
+                    "watch_config": {"enabled": watch_enabled, "debounce_ms": debounce_ms} if watch_enabled else None,
+                }
+            else:
+                return {"error": f"Scan failed:\n{stderr}\n{stdout}"}
+        finally:
+            with _scans_lock:
+                _active_scans.pop(str(folder), None)
+
     except subprocess.TimeoutExpired:
+        with _scans_lock:
+            proc = _active_scans.pop(str(folder), None)
+            if proc:
+                proc.kill()
         return {"error": "Scan timed out (>120s). Try a smaller folder."}
+    except Exception as e:
+        with _scans_lock:
+            _active_scans.pop(str(folder), None)
+        return {"error": str(e)}
+
+
+def _start_watcher(folder_path, graph_path, passes=None, debounce_ms=800):
+    """Start a GraphWatcher for the given folder."""
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT))
+        from incremental.watcher import GraphWatcher
+
+        folder = Path(folder_path).resolve()
+        graph = Path(graph_path).resolve()
+
+        if not folder.is_dir():
+            return {"error": f"Folder not found: {folder_path}"}
+
+        if not graph.is_file():
+            return {"error": f"Graph file not found: {graph_path}"}
+
+        # Check if watcher already running for this folder
+        with _watchers_lock:
+            if str(folder) in _active_watchers:
+                return {"error": "Watcher already active for this folder"}
+
+        # Filter passes (exclude 'scan' since watcher only handles incremental)
+        if passes:
+            passes = [p for p in passes if p != "scan"]
+        else:
+            passes = ["treesitter", "patterns", "connections"]
+
+        def on_graph_update(event):
+            broadcast_sse("graph-updated", {
+                "changed_files": event.changed_files,
+                "nodes_affected": event.nodes_affected,
+                "nodes_stale": event.nodes_stale,
+                "nodes_added": event.nodes_added,
+                "nodes_removed": event.nodes_removed,
+                "edges_after": event.edges_after,
+                "duration_ms": event.duration_ms,
+                "graph_path": event.graph_path,
+            })
+
+        watcher = GraphWatcher(
+            workspace_path=folder,
+            graph_path=graph,
+            on_update=on_graph_update,
+            debounce_ms=debounce_ms,
+            passes=passes,
+        )
+
+        watcher.start()
+
+        with _watchers_lock:
+            _active_watchers[str(folder)] = watcher
+
+        return {
+            "success": True,
+            "watch_id": str(folder),
+            "message": f"Watcher started for {folder.name}",
+        }
+
+    except ImportError as e:
+        return {"error": f"Could not start watcher: {e}. Install watchdog: pip install watchdog"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -198,8 +302,95 @@ def make_handler():
                 if not folder:
                     self._send_json({"error": "No folder specified"})
                     return
-                result = _run_scan(folder)
+
+                # Parse configuration from request
+                passes = data.get("passes", None)
+                watch_enabled = data.get("watchEnabled", False)
+                debounce_ms = data.get("debounceMs", 800)
+
+                result = _run_scan(folder, passes=passes, watch_enabled=watch_enabled, debounce_ms=debounce_ms)
+
+                # Start watcher if scan succeeded and watch mode enabled
+                if result.get("success") and watch_enabled:
+                    graph_path = result.get("graph_path")
+                    watch_result = _start_watcher(folder, graph_path, passes, debounce_ms)
+                    if not watch_result.get("success"):
+                        result["watch_error"] = watch_result.get("error")
+
                 self._send_json(result)
+
+            elif parsed.path == "/api/scan-abort":
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
+                data = json.loads(body) if body else {}
+                folder = data.get("folder", "")
+
+                with _scans_lock:
+                    if folder and folder in _active_scans:
+                        process = _active_scans[folder]
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                        _active_scans.pop(folder, None)
+                        self._send_json({"success": True, "message": "Scan cancelled"})
+                    elif _active_scans:
+                        # Cancel any active scan if folder not specified
+                        folder_path, process = next(iter(_active_scans.items()))
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                        _active_scans.pop(folder_path, None)
+                        self._send_json({"success": True, "message": "Scan cancelled"})
+                    else:
+                        self._send_json({"error": "No active scan to cancel"})
+
+            elif parsed.path == "/api/watch-start":
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len).decode("utf-8")
+                data = json.loads(body) if body else {}
+                folder = data.get("folder", "")
+                graph_path = data.get("graph_path", "")
+                debounce_ms = data.get("debounce_ms", 800)
+                passes = data.get("passes", ["treesitter", "patterns", "connections"])
+
+                if not folder or not graph_path:
+                    self._send_json({"error": "folder and graph_path required"})
+                    return
+
+                result = _start_watcher(folder, graph_path, passes, debounce_ms)
+                self._send_json(result)
+
+            elif parsed.path == "/api/watch-stop":
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
+                data = json.loads(body) if body else {}
+                folder = data.get("folder", "")
+                graph_path = data.get("graph_path", "")
+
+                # Try to find watcher by folder or graph_path
+                with _watchers_lock:
+                    watcher_key = None
+                    if folder and folder in _active_watchers:
+                        watcher_key = folder
+                    elif graph_path:
+                        # Find by graph path
+                        for key, watcher in _active_watchers.items():
+                            if str(watcher.graph_path) == graph_path:
+                                watcher_key = key
+                                break
+
+                    if watcher_key:
+                        watcher = _active_watchers[watcher_key]
+                        watcher.stop()
+                        _active_watchers.pop(watcher_key, None)
+                        self._send_json({"success": True, "message": "Watcher stopped"})
+                    else:
+                        self._send_json({"error": "No active watcher found"})
+
             else:
                 self._send_error(404, "Not found")
 
