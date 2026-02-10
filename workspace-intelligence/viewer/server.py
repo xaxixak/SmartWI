@@ -141,9 +141,9 @@ def _run_scan(folder_path, passes=None, watch_enabled=False, debounce_ms=800):
 
     # Add --passes flag if specified
     if passes:
-        # Filter and join passes
-        passes_str = ",".join(passes)
-        cmd.extend(["--passes", passes_str])
+        # Add each pass as separate argument
+        cmd.append("--passes")
+        cmd.extend(passes)
 
     try:
         start_time = time.time()
