@@ -1647,6 +1647,20 @@ function findMatchingNodeIds(runtimeEvent) {
     }
   }
 
+  if (runtimeEvent.type === 'db_operation') {
+    // Match model files (e.g., "Product" → "Product.js")
+    const modelName = runtimeEvent.model;
+    for (const node of rawData.nodes) {
+      if (node.name === `${modelName}.js`) matched.add(node.id);
+      // Also match Model classes
+      if (node.type === 'Class' && node.name === modelName) matched.add(node.id);
+    }
+    // Also match database.js
+    for (const node of rawData.nodes) {
+      if (node.name === 'database.js') matched.add(node.id);
+    }
+  }
+
   return matched;
 }
 
@@ -1718,13 +1732,29 @@ function showRuntimeRipple(nodeIds, runtimeEvent) {
   _activeGlowTimers.push(glowTimer);
 
   // 2. Expanding ripple rings (on top of persistent glow)
+  // Choose ripple color based on event type
+  let rippleColor = '#ff6b6b'; // default red
+  if (runtimeEvent.type === 'db_operation') {
+    const opColors = {
+      'SELECT': '#4ecca3',
+      'INSERT': '#00d2d3',
+      'UPDATE': '#f9ca24',
+      'DELETE': '#e94560'
+    };
+    rippleColor = opColors[runtimeEvent.operation] || '#a29bfe';
+  } else if (runtimeEvent.type === 'domain_event') {
+    rippleColor = '#ff9f43'; // orange
+  } else if (runtimeEvent.type === 'http_request') {
+    rippleColor = runtimeEvent.status < 400 ? '#4ecca3' : '#e94560'; // green or red
+  }
+
   for (const { el } of matchedNodes) {
     const group = d3.select(el);
 
     group.append('circle')
       .attr('class', 'runtime-ripple')
       .attr('cx', 0).attr('cy', 0).attr('r', 8)
-      .attr('stroke', '#ff6b6b').attr('stroke-width', 3).attr('opacity', 0.9)
+      .attr('stroke', rippleColor).attr('stroke-width', 3).attr('opacity', 0.9)
       .transition().duration(1500)
       .attr('r', 45).attr('stroke-width', 0.5).attr('opacity', 0)
       .remove();
@@ -1850,6 +1880,14 @@ function showRuntimeBanner(data) {
   } else if (data.type === 'http_request') {
     const sc = data.status < 400 ? '#4ecca3' : '#e94560';
     msg = `<span style="color:${sc}">${data.method} ${data.path}</span> ${data.status} (${data.duration_ms}ms)`;
+  } else if (data.type === 'db_operation') {
+    const opColor = {
+      'SELECT': '#4ecca3',
+      'INSERT': '#00d2d3',
+      'UPDATE': '#f9ca24',
+      'DELETE': '#e94560'
+    }[data.operation] || '#a29bfe';
+    msg = `<span style="color:${opColor}">DB ${data.operation}</span> ${data.model}.${data.method} (${data.affected_count} rows)`;
   }
 
   _runtimeBanner.innerHTML = msg;
@@ -1895,6 +1933,12 @@ function addRuntimeLogEntry(data, matchedNodeIds) {
     const cls = data.status >= 400 ? 'rle-http-err' : 'rle-http';
     typeHtml = `<span class="rle-type ${cls}">${data.method}</span>`;
     detailHtml = `${data.path} <span style="color:var(--text-muted)">${data.status} (${data.duration_ms}ms)</span>`;
+  } else if (data.type === 'db_operation') {
+    const opClass = data.operation === 'SELECT' ? 'rle-http' :
+                    data.operation === 'INSERT' ? 'rle-event' :
+                    data.operation === 'DELETE' ? 'rle-http-err' : 'rle-event';
+    typeHtml = `<span class="rle-type ${opClass}">DB ${data.operation}</span>`;
+    detailHtml = `${data.model}.${data.method} <span style="color:var(--text-muted)">(${data.affected_count} rows)</span>`;
   }
 
   // Resolve matched node names
