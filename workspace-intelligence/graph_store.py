@@ -260,7 +260,13 @@ class GraphStore:
     # CONTEXT PACK (SKILL API)
     # =========================================================================
 
-    def get_context(self, scope: str, focus: str, max_depth: int = 3) -> ContextPack:
+    def get_context(
+        self,
+        scope: str,
+        focus: str,
+        max_depth: int = 3,
+        max_tokens: int = 0,
+    ) -> ContextPack:
         """
         Generate a context pack for the Skill API.
 
@@ -268,6 +274,12 @@ class GraphStore:
             scope: Node ID or pattern to focus on (e.g., "service:order-api")
             focus: Task description (e.g., "Refactoring database schema")
             max_depth: How many hops to traverse
+            max_tokens: Token budget (0 = unlimited). When set, truncates
+                        context to fit within the budget, prioritizing:
+                        1. Target node + direct connections (depth 1)
+                        2. Stale warnings + risk assessment
+                        3. Deeper connections (depth 2+)
+                        4. Code snippets
 
         Returns:
             ContextPack with relevant nodes, edges, upstream, downstream, and risk.
@@ -322,7 +334,7 @@ class GraphStore:
         elif len(downstream) > 10:
             risk = f"Medium Risk: This touches {len(downstream)} downstream nodes."
 
-        return ContextPack(
+        pack = ContextPack(
             scope=scope,
             focus=focus,
             relevant_nodes=[target],
@@ -335,6 +347,119 @@ class GraphStore:
             depth=max_depth,
             total_nodes_in_scope=len(all_node_ids),
         )
+
+        # Apply token budget if set
+        if max_tokens > 0:
+            pack = self._apply_token_budget(pack, max_tokens)
+
+        return pack
+
+    @staticmethod
+    def _estimate_tokens(obj) -> int:
+        """Rough token estimate: ~4 chars per token for JSON-serialized data."""
+        try:
+            text = json.dumps(obj, default=str)
+            return len(text) // 4
+        except Exception:
+            return 0
+
+    def _apply_token_budget(self, pack: ContextPack, max_tokens: int) -> ContextPack:
+        """
+        Truncate a ContextPack to fit within a token budget.
+
+        Priority order (highest to lowest):
+          1. Scope, focus, risk, stale warnings (always kept)
+          2. Target node (relevant_nodes)
+          3. Direct upstream/downstream (depth 1)
+          4. Relevant edges
+          5. Related files
+          6. Deeper upstream/downstream (depth 2+)
+          7. Code snippets (trimmed last)
+        """
+        import json
+
+        # Always keep: scope, focus, risk, stale_warnings, metadata
+        base_tokens = self._estimate_tokens({
+            "scope": pack.scope,
+            "focus": pack.focus,
+            "risk_assessment": pack.risk_assessment,
+            "stale_warnings": pack.stale_warnings,
+            "depth": pack.depth,
+            "total_nodes_in_scope": pack.total_nodes_in_scope,
+        })
+        remaining = max_tokens - base_tokens
+
+        # 1. Target node
+        node_tokens = self._estimate_tokens(
+            [n.model_dump() for n in pack.relevant_nodes]
+        )
+        if node_tokens > remaining:
+            pack.relevant_nodes = pack.relevant_nodes[:1]  # Keep at least the target
+        remaining -= min(node_tokens, remaining)
+
+        # 2. Upstream (sort by confidence desc, keep what fits)
+        if remaining > 0 and pack.upstream:
+            sorted_up = sorted(pack.upstream, key=lambda n: n.confidence, reverse=True)
+            kept_up = []
+            for n in sorted_up:
+                cost = self._estimate_tokens(n.model_dump())
+                if cost <= remaining:
+                    kept_up.append(n)
+                    remaining -= cost
+                else:
+                    break
+            pack.upstream = kept_up
+
+        # 3. Downstream (same strategy)
+        if remaining > 0 and pack.downstream:
+            sorted_down = sorted(pack.downstream, key=lambda n: n.confidence, reverse=True)
+            kept_down = []
+            for n in sorted_down:
+                cost = self._estimate_tokens(n.model_dump())
+                if cost <= remaining:
+                    kept_down.append(n)
+                    remaining -= cost
+                else:
+                    break
+            pack.downstream = kept_down
+
+        # 4. Edges (keep only edges connecting kept nodes)
+        kept_ids = {n.id for n in pack.relevant_nodes + pack.upstream + pack.downstream}
+        pack.relevant_edges = [
+            e for e in pack.relevant_edges
+            if e.source_id in kept_ids and e.target_id in kept_ids
+        ]
+
+        # 5. Related files (trim to budget)
+        if remaining > 0 and pack.related_files:
+            kept_files = []
+            for loc in pack.related_files:
+                cost = self._estimate_tokens({"file": loc.file_path})
+                if cost <= remaining:
+                    kept_files.append(loc)
+                    remaining -= cost
+                else:
+                    break
+            pack.related_files = kept_files
+
+        # 6. Code snippets (trim last, most expensive)
+        if remaining <= 0:
+            pack.code_snippets = {}
+        elif pack.code_snippets:
+            kept_snippets = {}
+            for key, snippet in pack.code_snippets.items():
+                cost = len(snippet) // 4
+                if cost <= remaining:
+                    kept_snippets[key] = snippet
+                    remaining -= cost
+                else:
+                    # Truncate the snippet to fit
+                    if remaining > 100:
+                        kept_snippets[key] = snippet[:remaining * 4] + "\n... (truncated)"
+                    break
+            pack.code_snippets = kept_snippets
+
+        return pack
 
     # =========================================================================
     # SEARCH & ANALYSIS

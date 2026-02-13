@@ -37,6 +37,7 @@ from watchdog.events import FileSystemEventHandler, FileSystemEvent
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from graph_store import GraphStore
+from ontology import GraphNode, GraphEdge, NodeType, EdgeType, Provenance
 from incremental.change_detector import (
     ChangeSet, ChangeType, FileChange, map_changes_to_graph,
 )
@@ -47,21 +48,24 @@ from pipeline.pass2b_connections import ConnectionPass
 logger = logging.getLogger("workspace-intelligence.watcher")
 
 
-# Source file extensions we care about
-SOURCE_EXTENSIONS = {
-    ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs",
-    ".py", ".pyi",
-    ".go",
-    ".rs",
-    ".java", ".kt",
-    ".cs",
-    ".vue", ".svelte",
-    ".json", ".yaml", ".yml", ".toml",
-    ".env", ".env.local",
-    ".sql",
-    ".graphql", ".gql",
-    ".proto",
-    ".dockerfile",
+# Extensions to SKIP (binary/generated files we never want to track)
+SKIP_EXTENSIONS = {
+    # Binary / media
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".dat",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
+    ".mp3", ".mp4", ".wav", ".avi", ".mov", ".webm",
+    ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    # Generated / lock
+    ".pyc", ".pyo", ".class", ".o", ".obj",
+    ".map", ".min.js", ".min.css",
+    ".lock",
+    # Documents / databases / logs
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+    ".db", ".sqlite", ".sqlite3",
+    ".log",
+    # OS metadata
+    ".DS_Store",
 }
 
 # Directories to always ignore
@@ -114,14 +118,14 @@ class _DebouncedHandler(FileSystemEventHandler):
         self._timer: Optional[threading.Timer] = None
 
     def _should_track(self, path: str) -> bool:
-        """Check if this file change is relevant."""
+        """Check if this file change is relevant (track all files except binary/generated)."""
         p = Path(path)
         # Ignore directories we don't care about
         for part in p.parts:
             if part in IGNORE_DIRS:
                 return False
-        # Only track source files
-        return p.suffix.lower() in SOURCE_EXTENSIONS
+        # Skip binary/generated files, track everything else
+        return p.suffix.lower() not in SKIP_EXTENSIONS
 
     def _schedule_update(self):
         """Reset the debounce timer."""
@@ -204,6 +208,7 @@ class GraphWatcher:
         self._lock = threading.Lock()
         self._running = False
         self._update_count = 0
+        self._pending_contains: List[tuple] = []
 
     def start(self) -> None:
         """Start watching (non-blocking). Loads the graph first."""
@@ -258,6 +263,7 @@ class GraphWatcher:
     def _run_update(self, changes: Dict[str, ChangeType]) -> None:
         """Execute the self-healing pipeline on detected changes."""
         with self._lock:
+            self._pending_contains.clear()
             t0 = time.time()
 
             # Build a ChangeSet from the file system events
@@ -283,6 +289,62 @@ class GraphWatcher:
                 logger.info(f"  [{fc.change_type.value}] {fc.path}")
 
             try:
+                # Step 0: Ensure Module nodes exist for new directories
+                project_id = self._find_project_id()
+                for fc in file_changes:
+                    if fc.change_type == ChangeType.DELETED:
+                        continue
+                    abs_path = self.workspace_path / fc.path
+                    if not abs_path.exists():
+                        continue
+                    # Walk from file's parent up to workspace root, create missing Modules
+                    current = abs_path.parent
+                    while current != self.workspace_path and current != self.workspace_path.parent:
+                        relative = current.relative_to(self.workspace_path)
+                        module_name = str(relative).replace("\\", "/")
+                        module_id = f"module:{project_id}:{module_name}"
+                        if self._store.get_node(module_id):
+                            break  # Already exists, parents must too
+                        # Determine parent
+                        if current.parent == self.workspace_path:
+                            parent_id = project_id
+                        else:
+                            parent_rel = current.parent.relative_to(self.workspace_path)
+                            parent_name = str(parent_rel).replace("\\", "/")
+                            parent_id = f"module:{project_id}:{parent_name}"
+                        module_node = GraphNode(
+                            id=module_id,
+                            type=NodeType.MODULE,
+                            name=current.name + "/",
+                            description=f"Directory: {module_name}",
+                            parent_id=parent_id,
+                            provenance=Provenance.SCANNER,
+                            confidence=1.0,
+                            metadata={"path": str(current), "relative_path": module_name},
+                        )
+                        self._store.add_node(module_node)
+                        contains_edge = GraphEdge(
+                            source_id=parent_id,
+                            target_id=module_id,
+                            type=EdgeType.CONTAINS,
+                            provenance=Provenance.SCANNER,
+                            confidence=1.0,
+                        )
+                        self._store.add_edge(contains_edge, validate=False)
+                        logger.info(f"  [module] Created {module_name}/")
+                        current = current.parent
+
+                    # Also ensure CONTAINS edge from module → file after reindex
+                    # (selective_reindex creates the File node, we add CONTAINS here)
+                    file_id = f"file:{project_id}:{abs_path.resolve().as_posix()}"
+                    if abs_path.parent == self.workspace_path:
+                        file_parent_id = project_id
+                    else:
+                        rel = abs_path.parent.relative_to(self.workspace_path)
+                        file_parent_id = f"module:{project_id}:{str(rel).replace(chr(92), '/')}"
+                    # Defer CONTAINS edge creation until after reindex creates the File node
+                    self._pending_contains.append((file_parent_id, file_id))
+
                 # Step 1: Map changes to graph nodes
                 changeset = map_changes_to_graph(changeset, self._store)
 
@@ -300,6 +362,19 @@ class GraphWatcher:
                     changeset=changeset,
                     passes=self.passes,
                 )
+
+                # Step 3b: Create CONTAINS edges for new files
+                for parent_id, file_id in self._pending_contains:
+                    if self._store.get_node(file_id):
+                        contains_edge = GraphEdge(
+                            source_id=parent_id,
+                            target_id=file_id,
+                            type=EdgeType.CONTAINS,
+                            provenance=Provenance.SCANNER,
+                            confidence=1.0,
+                        )
+                        self._store.add_edge(contains_edge, validate=False)
+                self._pending_contains.clear()
 
                 # Step 4: Pass 2b — re-extract behavioral edges for changed files
                 try:
@@ -355,4 +430,5 @@ class GraphWatcher:
                         logger.warning(f"on_update callback error: {e}")
 
             except Exception as e:
+                self._pending_contains.clear()
                 logger.error(f"Update pipeline error: {e}", exc_info=True)

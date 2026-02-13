@@ -257,24 +257,26 @@ def run_pipeline(
 
             logger.info(f"  Created {total_modules} MODULE nodes and {total_files} FILE nodes for workspace")
 
-        # If projects detected, create MODULE nodes for each project
+        # If projects detected, create MODULE + FILE nodes for ALL dirs/files
+        skip_dirs = {
+            "node_modules", ".git", "__pycache__", ".venv", "venv",
+            "dist", "build", "target", ".next", ".nuxt", ".turbo",
+            ".nx", "coverage", ".pytest_cache", ".mypy_cache",
+            ".idea", ".vscode", "obj", "bin",
+        }
+        total_file_nodes = 0
+
         for project in scan_result.projects:
             language = PROJECT_LANGUAGE_MAP.get(project.project_type.value, "")
-            if not language:
-                continue
-
             project_id = f"project:{workspace_path.name}:{project.name}"
-            source_files = _collect_source_files(project.path, language)
 
-            # Collect all unique directories that contain source files
+            # Walk ALL directories (not just source-code dirs)
             dirs_seen = set()
-            for file_path in source_files:
-                # Walk from file's parent up to project root
-                current = file_path.parent
-                while current != project.path and current != project.path.parent:
-                    if current not in dirs_seen:
-                        dirs_seen.add(current)
-                    current = current.parent
+            for root, dirs, files in os.walk(project.path):
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
+                root_path = Path(root)
+                if root_path != project.path:
+                    dirs_seen.add(root_path)
 
             # Create MODULE nodes for each directory, sorted by depth (parents first)
             sorted_dirs = sorted(dirs_seen, key=lambda d: len(d.parts))
@@ -314,13 +316,58 @@ def run_pipeline(
                 store.add_edge(contains_edge, validate=False)
                 total_modules += 1
 
-            # Store the directory map for Pass 1 to use for CONTAINS file→module edges
+            # Create FILE nodes for ALL files in project (not just source files)
+            # Use absolute posix paths as IDs to match tree-sitter's ID format
+            for root, dirs, files in os.walk(project.path):
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
+                root_path = Path(root)
+                for file_name in files:
+                    file_path = root_path / file_name
+                    relative_file = file_path.relative_to(project.path)
+                    # Use absolute posix path as ID (matches tree-sitter format)
+                    file_id = f"file:{project_id}:{file_path.resolve().as_posix()}"
+
+                    # Determine parent module
+                    if file_path.parent == project.path:
+                        parent_id = project_id
+                    else:
+                        parent_relative = file_path.parent.relative_to(project.path)
+                        parent_name = str(parent_relative).replace("\\", "/")
+                        parent_id = f"module:{project_id}:{parent_name}"
+
+                    file_node = GraphNode(
+                        id=file_id,
+                        type=NodeType.FILE,
+                        name=file_name,
+                        description=f"File: {str(relative_file)}",
+                        parent_id=parent_id,
+                        provenance=Provenance.SCANNER,
+                        confidence=1.0,
+                        metadata={
+                            "path": str(file_path),
+                            "relative_path": str(relative_file).replace("\\", "/"),
+                        },
+                    )
+                    store.add_node(file_node)
+
+                    # CONTAINS edge: parent → file
+                    contains_edge = GraphEdge(
+                        source_id=parent_id,
+                        target_id=file_id,
+                        type=EdgeType.CONTAINS,
+                        provenance=Provenance.SCANNER,
+                        confidence=1.0,
+                    )
+                    store.add_edge(contains_edge, validate=False)
+                    total_file_nodes += 1
+
+            # Store the directory map for Pass 1
             _dir_maps[project_id] = {
                 "project_path": project.path,
                 "dirs": sorted_dirs,
             }
 
-        logger.info(f"  Created {total_modules} MODULE nodes")
+        logger.info(f"  Created {total_modules} MODULE nodes, {total_file_nodes} FILE nodes")
 
     # -- Pass 1: Tree-sitter AST Extraction ----------------------------
     if "treesitter" in passes and scan_result.projects:
@@ -349,23 +396,7 @@ def run_pipeline(
                     nodes = ts_pass.process_file(file_path, project_id, language)
                     total_files += 1
                     total_nodes += len(nodes)
-
-                    # Create CONTAINS edge: module → file
-                    if nodes:
-                        file_node_id = nodes[0].id  # First node is the FILE node
-                        relative = file_path.parent.relative_to(project.path)
-                        module_name = str(relative).replace("\\", "/")
-                        module_id = f"module:{project_id}:{module_name}"
-
-                        contains_edge = GraphEdge(
-                            source_id=module_id,
-                            target_id=file_node_id,
-                            type=EdgeType.CONTAINS,
-                            provenance=Provenance.SCANNER,
-                            confidence=1.0,
-                        )
-                        store.add_edge(contains_edge, validate=False)
-
+                    # CONTAINS edges are already created by Pass 0b
                 except Exception as e:
                     errors.append(f"Pass 1 error on {file_path}: {e}")
 

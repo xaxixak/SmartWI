@@ -233,8 +233,9 @@ class TreeSitterPass:
         line_count: int,
     ) -> GraphNode:
         """Create a FILE node."""
+        resolved_path = file_path.resolve().as_posix()
         relative_path = file_path.as_posix()
-        node_id = f"file:{project_id}:{relative_path}"
+        node_id = f"file:{project_id}:{resolved_path}"
 
         source_hash = self._compute_source_hash(source_content)
 
