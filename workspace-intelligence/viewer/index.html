@@ -828,9 +828,9 @@ body {
 
       <!-- 3D Layout Modes (hidden in 2D) -->
       <div id="layout-toggle-container" class="layout-toggle-group" style="display:none">
-        <button class="layout-toggle-btn active" data-layout="force" onclick="set3DLayout('force')">Force</button>
-        <button class="layout-toggle-btn" data-layout="cluster" onclick="set3DLayout('cluster')">Cluster</button>
-        <button class="layout-toggle-btn" data-layout="hierarchy" onclick="set3DLayout('hierarchy')">Hierarchy</button>
+        <button class="layout-toggle-btn active" data-layout="tree" onclick="set3DLayout('tree')">Tree</button>
+        <button class="layout-toggle-btn" data-layout="zones" onclick="set3DLayout('zones')">Zones</button>
+        <button class="layout-toggle-btn" data-layout="flat" onclick="set3DLayout('flat')">Flat</button>
       </div>
 
       <!-- Replay (3D only) -->
@@ -950,6 +950,21 @@ body {
       <label>Particle Speed: <span id="hud-part-val">0.3</span>
         <input type="range" id="hud-particle" min="0.1" max="1" value="0.3" step="0.05" oninput="hudUpdate()">
       </label>
+      <div style="border-top:1px solid var(--border);margin:8px 0;padding-top:8px">
+        <div class="hud-title" style="font-size:11px;margin-bottom:6px">Intelligence Overlays</div>
+        <div class="hud-row">
+          <input type="checkbox" id="hud-pagerank" onchange="hudUpdate()">
+          <span>Scale by PageRank</span>
+        </div>
+        <div class="hud-row">
+          <input type="checkbox" id="hud-communities" onchange="hudUpdate()">
+          <span>Color by Community</span>
+        </div>
+        <div class="hud-row">
+          <input type="checkbox" id="hud-orphans" checked onchange="hudUpdate()">
+          <span style="color:#E74C3C">Highlight Orphans</span>
+        </div>
+      </div>
       <div style="border-top:1px solid var(--border);margin:8px 0;padding-top:8px">
         <button onclick="reset3DCamera()" style="background:transparent;border:1px solid var(--border);border-radius:4px;padding:4px 10px;color:var(--text-muted);cursor:pointer;font-size:11px;width:100%">Reset Camera</button>
       </div>
@@ -3361,7 +3376,7 @@ let scene3d = null, camera3d = null, renderer3d = null;
 let meshes3d = [], linkLines3d = [], linkDataArr3d = [];
 let animFrame3d = null;
 let travelingParticles3d = null;
-let layout3d = 'force'; // 'force', 'cluster', 'hierarchy'
+let layout3d = 'tree'; // 'tree', 'zones', 'flat'
 let intelligenceData = null;
 
 // 3D type colors (hex numbers for Three.js)
@@ -3486,6 +3501,7 @@ const hud3d = {
   camDistance: 15, nodeSize: 1.0, breathingIntensity: 0.05,
   rotationSpeed: 0.02, linkOpacity: 0.15, particleSpeed: 0.3,
   showAllLinks: false, sphereMode: false,
+  scaleByPageRank: false, colorByCommunity: false, highlightOrphans: true,
 };
 const camX3d = { x: 0, v: 0 };
 const camY3d = { x: 0, v: 0 };
@@ -3503,6 +3519,9 @@ function hudUpdate() {
   hud3d.particleSpeed = parseFloat(document.getElementById('hud-particle').value);
   hud3d.showAllLinks = document.getElementById('hud-show-links').checked;
   hud3d.sphereMode = document.getElementById('hud-sphere').checked;
+  hud3d.scaleByPageRank = document.getElementById('hud-pagerank').checked;
+  hud3d.colorByCommunity = document.getElementById('hud-communities').checked;
+  hud3d.highlightOrphans = document.getElementById('hud-orphans').checked;
 
   document.getElementById('hud-cam-val').textContent = hud3d.camDistance;
   document.getElementById('hud-size-val').textContent = hud3d.nodeSize.toFixed(1);
@@ -3510,6 +3529,32 @@ function hudUpdate() {
   document.getElementById('hud-rot-val').textContent = hud3d.rotationSpeed.toFixed(3);
   document.getElementById('hud-link-val').textContent = hud3d.linkOpacity.toFixed(2);
   document.getElementById('hud-part-val').textContent = hud3d.particleSpeed.toFixed(2);
+
+  // Apply intelligence overlays if scene is active
+  if (scene3d && meshes3d.length > 0) applyIntelligenceOverlays();
+}
+
+// --- Intelligence overlay application ---
+function applyIntelligenceOverlays() {
+  meshes3d.forEach(mesh => {
+    const ud = mesh.userData;
+    const node = ud.node;
+    // Color: community or type
+    let color;
+    if (hud3d.colorByCommunity && ud.communityId !== undefined) {
+      color = COMMUNITY_COLORS[ud.communityId % COMMUNITY_COLORS.length];
+    } else {
+      color = TYPE_COLORS_3D[node.type] || 0x888888;
+    }
+    mesh.material.color.setHex(color);
+    // Emissive: orphan or default
+    if (hud3d.highlightOrphans && ud.isOrphan) {
+      mesh.material.emissive.setHex(0xE74C3C);
+    } else {
+      mesh.material.emissive.setHex(color);
+      mesh.material.emissiveIntensity = 0.1;
+    }
+  });
 }
 
 function reset3DCamera() {
@@ -3519,6 +3564,134 @@ function reset3DCamera() {
   hud3d.camDistance = 15;
   document.getElementById('hud-cam-dist').value = 15;
   document.getElementById('hud-cam-val').textContent = '15';
+}
+
+// --- Containment tree builder (for Tree layout + sphere grouping) ---
+function buildContainmentTree(nodes) {
+  const nodeMap = new Map();
+  const roots = [];
+  nodes.forEach(n => nodeMap.set(n.id, { ...n, _children: [], _depth: 0 }));
+  nodes.forEach(n => {
+    if (n.parent_id && nodeMap.has(n.parent_id)) {
+      nodeMap.get(n.parent_id)._children.push(n.id);
+    } else {
+      roots.push(n.id);
+    }
+  });
+  // BFS to compute depth
+  const queue = roots.map(id => ({ id, depth: 0 }));
+  let maxDepth = 0;
+  while (queue.length > 0) {
+    const { id, depth } = queue.shift();
+    const nd = nodeMap.get(id);
+    nd._depth = depth;
+    if (depth > maxDepth) maxDepth = depth;
+    for (const cid of nd._children) queue.push({ id: cid, depth: depth + 1 });
+  }
+  return { nodeMap, roots, maxDepth };
+}
+
+// --- Tree layout: Y=depth, X/Z=radial spread around parent ---
+function compute3DTreePositions(nodes) {
+  const { nodeMap, roots, maxDepth } = buildContainmentTree(nodes);
+  const positions = new Map();
+  const yStep = maxDepth > 0 ? 12 / maxDepth : 3;
+
+  function layoutNode(nodeId, parentX, parentZ, sibIdx, sibCount, radius) {
+    const nd = nodeMap.get(nodeId);
+    const y = 6 - nd._depth * yStep;
+    let x, z;
+    if (nd._depth === 0) {
+      x = (sibIdx - (sibCount - 1) / 2) * 4;
+      z = 0;
+    } else {
+      const angle = (sibIdx / Math.max(sibCount, 1)) * Math.PI * 2 + nd._depth * 0.3;
+      const spread = radius * (0.8 + Math.sqrt(sibCount) * 0.25);
+      x = parentX + Math.cos(angle) * spread;
+      z = parentZ + Math.sin(angle) * spread;
+    }
+    positions.set(nodeId, new THREE.Vector3(x, y, z));
+    const children = nd._children;
+    const childRadius = radius * 0.65;
+    for (let i = 0; i < children.length; i++) {
+      layoutNode(children[i], x, z, i, children.length, childRadius);
+    }
+  }
+
+  for (let i = 0; i < roots.length; i++) {
+    layoutNode(roots[i], 0, 0, i, roots.length, 3.5);
+  }
+  return positions;
+}
+
+// --- Sphere layout grouped by directory ---
+function compute3DSpherePositions(nodes) {
+  const { nodeMap, roots } = buildContainmentTree(nodes);
+  const positions = new Map();
+  const SPHERE_R = 7;
+
+  // Assign each top-level module a longitude arc on the sphere
+  // Recursively place children near parent
+  let arcIdx = 0;
+  const topModules = [];
+  // Gather top-level children (depth 1 or 2 modules)
+  function gatherModules(ids) {
+    for (const id of ids) {
+      const nd = nodeMap.get(id);
+      if (nd._children.length > 0 && nd._depth <= 2) {
+        topModules.push(id);
+      } else if (nd._depth <= 1) {
+        gatherModules(nd._children);
+      }
+    }
+  }
+  gatherModules(roots);
+  if (topModules.length === 0) topModules.push(...roots);
+
+  const arcStep = (Math.PI * 2) / Math.max(topModules.length, 1);
+
+  function placeSphere(nodeId, basePhi, baseTheta, spread, idx) {
+    const nd = nodeMap.get(nodeId);
+    const phi = basePhi + (idx * 0.15 - nd._children.length * 0.075) * spread;
+    const theta = baseTheta + (nd._depth * 0.35);
+    const r = SPHERE_R;
+    const sinT = Math.sin(theta);
+    positions.set(nodeId, new THREE.Vector3(
+      r * sinT * Math.cos(phi),
+      r * Math.cos(theta),
+      r * sinT * Math.sin(phi)
+    ));
+    for (let i = 0; i < nd._children.length; i++) {
+      placeSphere(nd._children[i], phi, theta, spread * 0.6, i);
+    }
+  }
+
+  // Place roots at north pole
+  roots.forEach((rid, i) => {
+    positions.set(rid, new THREE.Vector3(0, SPHERE_R, 0));
+    const nd = nodeMap.get(rid);
+    // Place direct children distributing arcs
+    let modIdx = 0;
+    for (const cid of nd._children) {
+      if (topModules.includes(cid)) {
+        const phi = modIdx * arcStep;
+        placeSphere(cid, phi, 0.6, 0.8, modIdx);
+        modIdx++;
+      } else {
+        placeSphere(cid, modIdx * arcStep, 0.4, 0.5, modIdx);
+        modIdx++;
+      }
+    }
+  });
+
+  // Place any remaining unplaced nodes
+  nodes.forEach((n, i) => {
+    if (!positions.has(n.id)) {
+      positions.set(n.id, hashOnSphere3d(42, i).multiplyScalar(SPHERE_R));
+    }
+  });
+
+  return positions;
 }
 
 // --- 2D/3D mode switch ---
@@ -3608,17 +3781,15 @@ async function init3DScene() {
     ? buildCommunityMap(intelligenceData.communities)
     : clusterNodes3d(nodes, edges);
 
-  // PageRank for sizing
+  // PageRank for sizing (optional overlay)
   const pageRanks = intelligenceData && intelligenceData.pagerank
-    ? intelligenceData.pagerank
-    : {};
+    ? intelligenceData.pagerank : {};
 
   // Orphan detection
   const orphanSet = intelligenceData && intelligenceData.orphans
-    ? new Set(intelligenceData.orphans)
-    : new Set();
+    ? new Set(intelligenceData.orphans) : new Set();
 
-  // Architecture score
+  // Architecture score badge
   if (intelligenceData && intelligenceData.architecture_score != null) {
     const badge = document.getElementById('arch-score-badge');
     const score = typeof intelligenceData.architecture_score === 'object'
@@ -3628,92 +3799,7 @@ async function init3DScene() {
     badge.style.display = 'block';
   }
 
-  // Cluster centers
-  const clusterCenters = new Map();
-  const maxCluster = Math.max(0, ...Array.from(clusters.values()));
-  for (let i = 0; i <= maxCluster; i++) {
-    clusterCenters.set(i, hashOnSphere3d(42, i * 1000).multiplyScalar(6));
-  }
-
-  // Node meshes
-  const sharedGeo = new THREE.SphereGeometry(0.08, 16, 16);
-  meshes3d = [];
-  const nodeMap3d = new Map();
-
-  // Tier Y offsets for hierarchy layout
-  const TIER_Y = { macro: 4, meso: 0, micro: -4 };
-
-  nodes.forEach((node, i) => {
-    nodeMap3d.set(node.id, i);
-
-    const typeColor = TYPE_COLORS_3D[node.type] || 0x888888;
-    const communityId = clusters.get(node.id) || 0;
-    const isOrphan = orphanSet.has(node.id);
-
-    // Scale by PageRank
-    const rank = pageRanks[node.id] || 0;
-    const sizeScale = 0.5 + Math.min(rank * 500, 3);
-
-    const material = new THREE.MeshStandardMaterial({
-      color: typeColor,
-      metalness: 0.3,
-      roughness: 0.4,
-      emissive: isOrphan ? 0xE74C3C : typeColor,
-      emissiveIntensity: isOrphan ? 0.4 : 0.1,
-    });
-
-    const mesh = new THREE.Mesh(sharedGeo, material);
-
-    // Cluster position
-    const clusterCenter = clusterCenters.get(communityId) || new THREE.Vector3();
-    const localPos = hashOnSphere3d(communityId + 100, i).multiplyScalar(1.5 + xxhash3d(42, i));
-    const clusterPos = clusterCenter.clone().add(localPos);
-
-    // Sphere position
-    const spherePos = hashOnSphere3d(42, i).multiplyScalar(6);
-
-    // Force layout position (random spread)
-    const forcePos = new THREE.Vector3(
-      (xxhash3d(1, i) - 0.5) * 12,
-      (xxhash3d(2, i) - 0.5) * 12,
-      (xxhash3d(3, i) - 0.5) * 12
-    );
-
-    // Hierarchy position
-    const tier = node.tier || NODE_TIER[node.type] || 'micro';
-    const typeZone = TYPE_ZONE[node.type] || 0.5;
-    const hierPos = new THREE.Vector3(
-      (typeZone - 0.5) * 16,
-      TIER_Y[tier] || -4,
-      (xxhash3d(5, i) - 0.5) * 8
-    );
-
-    // Start at current layout position
-    let startPos;
-    if (layout3d === 'cluster') startPos = clusterPos.clone();
-    else if (layout3d === 'hierarchy') startPos = hierPos.clone();
-    else startPos = forcePos.clone();
-
-    mesh.position.copy(startPos);
-    mesh.scale.setScalar(sizeScale);
-
-    mesh.userData = {
-      node, index: i,
-      clusterPos: clusterPos.clone(),
-      spherePos: spherePos.clone(),
-      forcePos: forcePos.clone(),
-      hierPos: hierPos.clone(),
-      currentPos: startPos.clone(),
-      sizeScale,
-      isOrphan,
-      communityId,
-    };
-
-    scene3d.add(mesh);
-    meshes3d.push(mesh);
-  });
-
-  // Adjacency for link hover
+  // --- Compute adjacency for sizing ---
   const adj3d = new Map();
   nodes.forEach(n => adj3d.set(n.id, new Set()));
   edges.forEach(e => {
@@ -3723,7 +3809,102 @@ async function init3DScene() {
     if (adj3d.has(tgt)) adj3d.get(tgt).add(src);
   });
 
-  // Link lines
+  // --- Pre-compute all layout positions ---
+  const treePositions = compute3DTreePositions(nodes);
+  const spherePositions = compute3DSpherePositions(nodes);
+
+  // Zones: X=type zone, Y=tier, Z=containment depth
+  const zonesPositions = new Map();
+  const TIER_Y_ZONES = { macro: 5, meso: 0, micro: -5 };
+  const { nodeMap: ctreeMap } = buildContainmentTree(nodes);
+  nodes.forEach(n => {
+    const tier = n.tier || NODE_TIER[n.type] || 'micro';
+    const typeZone = TYPE_ZONE[n.type] || 0.5;
+    const depth = ctreeMap.get(n.id)?._depth || 0;
+    zonesPositions.set(n.id, new THREE.Vector3(
+      (typeZone - 0.5) * 20,
+      TIER_Y_ZONES[tier] || -5,
+      (depth - 3) * 1.5
+    ));
+  });
+
+  // Flat: initial random spread (will be refined by force sim)
+  const flatPositions = new Map();
+  nodes.forEach((n, i) => {
+    flatPositions.set(n.id, new THREE.Vector3(
+      (xxhash3d(1, i) - 0.5) * 12,
+      (xxhash3d(2, i) - 0.5) * 12,
+      (xxhash3d(3, i) - 0.5) * 12
+    ));
+  });
+
+  // --- Node meshes ---
+  const sharedGeo = new THREE.SphereGeometry(0.08, 16, 16);
+  meshes3d = [];
+  const nodeMap3d = new Map();
+
+  nodes.forEach((node, i) => {
+    nodeMap3d.set(node.id, i);
+
+    const typeColor = TYPE_COLORS_3D[node.type] || 0x888888;
+    const communityId = clusters.get(node.id) || 0;
+    const isOrphan = orphanSet.has(node.id);
+
+    // Default sizing: tier base + connection count (matching 2D)
+    const tier = node.tier || NODE_TIER[node.type] || 'micro';
+    const tierBase = { macro: 1.5, meso: 1.0, micro: 0.6 };
+    const edgeCount = adj3d.get(node.id)?.size || 0;
+    const defaultSize = (tierBase[tier] || 0.6) + Math.min(edgeCount * 0.08, 1.2);
+
+    // PageRank sizing (optional overlay)
+    const rank = pageRanks[node.id] || 0;
+    const pagerankSize = rank > 0 ? (0.5 + Math.min(rank * 500, 3)) : defaultSize;
+
+    const sizeScale = hud3d.scaleByPageRank ? pagerankSize : defaultSize;
+
+    const material = new THREE.MeshStandardMaterial({
+      color: typeColor,
+      metalness: 0.3,
+      roughness: 0.4,
+      emissive: (hud3d.highlightOrphans && isOrphan) ? 0xE74C3C : typeColor,
+      emissiveIntensity: (hud3d.highlightOrphans && isOrphan) ? 0.4 : 0.1,
+    });
+
+    const mesh = new THREE.Mesh(sharedGeo, material);
+
+    // Get position for current layout
+    const treePos = treePositions.get(node.id) || new THREE.Vector3();
+    const zonesPos = zonesPositions.get(node.id) || new THREE.Vector3();
+    const flatPos = flatPositions.get(node.id) || new THREE.Vector3();
+    const spherePos = spherePositions.get(node.id) || new THREE.Vector3();
+
+    let startPos;
+    if (layout3d === 'zones') startPos = zonesPos.clone();
+    else if (layout3d === 'flat') startPos = flatPos.clone();
+    else startPos = treePos.clone(); // default: tree
+
+    mesh.position.copy(startPos);
+    mesh.scale.setScalar(sizeScale);
+
+    mesh.userData = {
+      node, index: i,
+      treePos: treePos.clone(),
+      zonesPos: zonesPos.clone(),
+      flatPos: flatPos.clone(),
+      spherePos: spherePos.clone(),
+      currentPos: startPos.clone(),
+      defaultSize,
+      pagerankSize,
+      sizeScale,
+      isOrphan,
+      communityId,
+    };
+
+    scene3d.add(mesh);
+    meshes3d.push(mesh);
+  });
+
+  // Link lines (adj3d already built above)
   linkLines3d = [];
   linkDataArr3d = [];
   const maxLinks = Math.min(edges.length, 3000);
@@ -3782,9 +3963,11 @@ async function init3DScene() {
   travelingParticles3d.visible = false;
   scene3d.add(travelingParticles3d);
 
-  // --- Force simulation in 3D ---
-  if (layout3d === 'force') {
-    run3DForce(nodes, edges, nodeMap3d, adj3d);
+  // --- Force simulation for flat and zones layouts ---
+  if (layout3d === 'flat') {
+    run3DFlatForce(nodes, edges, nodeMap3d, adj3d);
+  } else if (layout3d === 'zones') {
+    run3DZonesForce(nodes, edges, nodeMap3d, adj3d);
   }
 
   // --- Animation loop ---
@@ -3814,12 +3997,12 @@ async function init3DScene() {
       let targetPos;
       if (isSphere) {
         targetPos = ud.spherePos;
-      } else if (layout3d === 'cluster') {
-        targetPos = ud.clusterPos;
-      } else if (layout3d === 'hierarchy') {
-        targetPos = ud.hierPos;
+      } else if (layout3d === 'tree') {
+        targetPos = ud.treePos;
+      } else if (layout3d === 'zones') {
+        targetPos = ud.zonesPos;
       } else {
-        targetPos = ud.forcePos;
+        targetPos = ud.flatPos;
       }
 
       ud.currentPos.lerp(targetPos, 0.05);
@@ -3829,13 +4012,13 @@ async function init3DScene() {
       const scale = 1 + n * hud3d.breathingIntensity;
       mesh.position.copy(ud.currentPos).multiplyScalar(scale);
 
-      // Node size (base + pagerank)
-      mesh.scale.setScalar(ud.sizeScale * hud3d.nodeSize);
+      // Node size — tier+connections default, or PageRank if toggled
+      const activeSize = hud3d.scaleByPageRank ? ud.pagerankSize : ud.defaultSize;
+      mesh.scale.setScalar(activeSize * hud3d.nodeSize);
 
       // Orphan pulsing
-      if (ud.isOrphan) {
-        const mat = mesh.material;
-        mat.emissiveIntensity = 0.3 + 0.3 * Math.sin(time3d * 3 + i);
+      if (hud3d.highlightOrphans && ud.isOrphan) {
+        mesh.material.emissiveIntensity = 0.3 + 0.3 * Math.sin(time3d * 3 + i);
       }
 
       // Gentle rotation
@@ -4062,80 +4245,176 @@ function buildCommunityMap(communities) {
   return map;
 }
 
-// --- 3D Force simulation (simple repulsion + attraction) ---
-function run3DForce(nodes, edges, nodeMap3d, adj3d) {
-  // Simple force iterations to position nodes
-  const positions = nodes.map((n, i) => ({
-    x: (xxhash3d(1, i) - 0.5) * 12,
-    y: (xxhash3d(2, i) - 0.5) * 12,
-    z: (xxhash3d(3, i) - 0.5) * 12,
-    vx: 0, vy: 0, vz: 0,
-  }));
+// --- Flat Force: 3D force with tier-based charges + parent clustering ---
+function run3DFlatForce(nodes, edges, nodeMap3d, adj3d) {
+  const CHARGE = { macro: 4, meso: 2, micro: 1 };
+  const positions = nodes.map((n, i) => {
+    const m = meshes3d[i];
+    return {
+      x: m.userData.flatPos.x, y: m.userData.flatPos.y, z: m.userData.flatPos.z,
+      vx: 0, vy: 0, vz: 0,
+      tier: n.tier || NODE_TIER[n.type] || 'micro',
+      parent_id: n.parent_id,
+    };
+  });
 
   const edgeList = edges.map(e => ({
     src: nodeMap3d.get(e.source_id || e.source),
     tgt: nodeMap3d.get(e.target_id || e.target),
+    type: e.type,
   })).filter(e => e.src !== undefined && e.tgt !== undefined);
 
-  // Run 100 iterations
+  const nodeIdxById = {};
+  nodes.forEach((n, i) => { nodeIdxById[n.id] = i; });
+
+  for (let iter = 0; iter < 120; iter++) {
+    const alpha = 0.3 * (1 - iter / 120);
+
+    // Tier-based repulsion
+    for (let i = 0; i < positions.length; i++) {
+      for (let j = i + 1; j < Math.min(positions.length, i + 60); j++) {
+        const dx = positions[i].x - positions[j].x;
+        const dy = positions[i].y - positions[j].y;
+        const dz = positions[i].z - positions[j].z;
+        const dist2 = dx*dx + dy*dy + dz*dz + 0.01;
+        const ci = CHARGE[positions[i].tier] || 1;
+        const cj = CHARGE[positions[j].tier] || 1;
+        const force = alpha * (ci + cj) / dist2;
+        positions[i].vx += dx * force; positions[i].vy += dy * force; positions[i].vz += dz * force;
+        positions[j].vx -= dx * force; positions[j].vy -= dy * force; positions[j].vz -= dz * force;
+      }
+    }
+
+    // Edge-type based attraction
+    edgeList.forEach(({ src, tgt, type }) => {
+      const dx = positions[tgt].x - positions[src].x;
+      const dy = positions[tgt].y - positions[src].y;
+      const dz = positions[tgt].z - positions[src].z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) + 0.01;
+      const targetDist = (type === 'CONTAINS' || type === 'DEFINES') ? 2 :
+                         (type === 'IMPORTS') ? 4 : 5;
+      const force = alpha * (dist - targetDist) * 0.06;
+      positions[src].vx += dx/dist * force; positions[src].vy += dy/dist * force; positions[src].vz += dz/dist * force;
+      positions[tgt].vx -= dx/dist * force; positions[tgt].vy -= dy/dist * force; positions[tgt].vz -= dz/dist * force;
+    });
+
+    // Parent clustering — pull children toward parent
+    positions.forEach((p, i) => {
+      if (p.parent_id && nodeIdxById[p.parent_id] !== undefined) {
+        const pp = positions[nodeIdxById[p.parent_id]];
+        p.vx += (pp.x - p.x) * alpha * 0.06;
+        p.vy += (pp.y - p.y) * alpha * 0.06;
+        p.vz += (pp.z - p.z) * alpha * 0.04;
+      }
+    });
+
+    // Centering + damping
+    let cx = 0, cy = 0, cz = 0;
+    positions.forEach(p => { cx += p.x; cy += p.y; cz += p.z; });
+    cx /= positions.length; cy /= positions.length; cz /= positions.length;
+    positions.forEach(p => {
+      p.vx *= 0.6; p.vy *= 0.6; p.vz *= 0.6;
+      p.x += p.vx - cx * 0.01; p.y += p.vy - cy * 0.01; p.z += p.vz - cz * 0.01;
+    });
+  }
+
+  meshes3d.forEach((mesh, i) => {
+    if (positions[i]) {
+      mesh.userData.flatPos.set(positions[i].x, positions[i].y, positions[i].z);
+      if (layout3d === 'flat') {
+        mesh.userData.currentPos.copy(mesh.userData.flatPos);
+        mesh.position.copy(mesh.userData.flatPos);
+      }
+    }
+  });
+}
+
+// --- Zones Force: 3D force with type-zone X, tier Y constraints ---
+function run3DZonesForce(nodes, edges, nodeMap3d, adj3d) {
+  const CHARGE = { macro: 4, meso: 2, micro: 1 };
+  const TIER_Y = { macro: 5, meso: 0, micro: -5 };
+  const positions = nodes.map((n, i) => {
+    const m = meshes3d[i];
+    return {
+      x: m.userData.zonesPos.x, y: m.userData.zonesPos.y, z: m.userData.zonesPos.z,
+      vx: 0, vy: 0, vz: 0,
+      tier: n.tier || NODE_TIER[n.type] || 'micro',
+      typeZone: TYPE_ZONE[n.type] || 0.5,
+      parent_id: n.parent_id,
+    };
+  });
+
+  const edgeList = edges.map(e => ({
+    src: nodeMap3d.get(e.source_id || e.source),
+    tgt: nodeMap3d.get(e.target_id || e.target),
+    type: e.type,
+  })).filter(e => e.src !== undefined && e.tgt !== undefined);
+
+  const nodeIdxById = {};
+  nodes.forEach((n, i) => { nodeIdxById[n.id] = i; });
+
   for (let iter = 0; iter < 100; iter++) {
     const alpha = 0.3 * (1 - iter / 100);
 
-    // Repulsion (Barnes-Hut simplified)
+    // Tier-based repulsion
     for (let i = 0; i < positions.length; i++) {
       for (let j = i + 1; j < Math.min(positions.length, i + 50); j++) {
         const dx = positions[i].x - positions[j].x;
         const dy = positions[i].y - positions[j].y;
         const dz = positions[i].z - positions[j].z;
         const dist2 = dx*dx + dy*dy + dz*dz + 0.01;
-        const force = alpha * 2 / dist2;
-        positions[i].vx += dx * force;
-        positions[i].vy += dy * force;
-        positions[i].vz += dz * force;
-        positions[j].vx -= dx * force;
-        positions[j].vy -= dy * force;
-        positions[j].vz -= dz * force;
+        const ci = CHARGE[positions[i].tier] || 1;
+        const cj = CHARGE[positions[j].tier] || 1;
+        const force = alpha * (ci + cj) / dist2;
+        positions[i].vx += dx * force; positions[i].vy += dy * force; positions[i].vz += dz * force;
+        positions[j].vx -= dx * force; positions[j].vy -= dy * force; positions[j].vz -= dz * force;
       }
     }
 
-    // Attraction along edges
-    edgeList.forEach(({ src, tgt }) => {
+    // Edge attraction with type-based distances
+    edgeList.forEach(({ src, tgt, type }) => {
       const dx = positions[tgt].x - positions[src].x;
       const dy = positions[tgt].y - positions[src].y;
       const dz = positions[tgt].z - positions[src].z;
       const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) + 0.01;
-      const force = alpha * (dist - 2) * 0.05;
-      positions[src].vx += dx / dist * force;
-      positions[src].vy += dy / dist * force;
-      positions[src].vz += dz / dist * force;
-      positions[tgt].vx -= dx / dist * force;
-      positions[tgt].vy -= dy / dist * force;
-      positions[tgt].vz -= dz / dist * force;
+      const targetDist = (type === 'CONTAINS' || type === 'DEFINES') ? 2 :
+                         (type === 'IMPORTS') ? 4 : 5;
+      const force = alpha * (dist - targetDist) * 0.06;
+      positions[src].vx += dx/dist * force; positions[src].vy += dy/dist * force; positions[src].vz += dz/dist * force;
+      positions[tgt].vx -= dx/dist * force; positions[tgt].vy -= dy/dist * force; positions[tgt].vz -= dz/dist * force;
     });
 
-    // Centering
-    let cx = 0, cy = 0, cz = 0;
-    positions.forEach(p => { cx += p.x; cy += p.y; cz += p.z; });
-    cx /= positions.length; cy /= positions.length; cz /= positions.length;
-
-    // Apply
+    // Constrain: pull X toward type zone, Y toward tier layer
     positions.forEach(p => {
-      p.vx *= 0.6;
-      p.vy *= 0.6;
-      p.vz *= 0.6;
-      p.x += p.vx - cx * 0.01;
-      p.y += p.vy - cy * 0.01;
-      p.z += p.vz - cz * 0.01;
+      const targetX = (p.typeZone - 0.5) * 20;
+      const tierY = TIER_Y[p.tier] || -5;
+      p.vx += (targetX - p.x) * alpha * 0.15;
+      p.vy += (tierY - p.y) * alpha * 0.12;
+    });
+
+    // Parent clustering
+    positions.forEach((p, i) => {
+      if (p.parent_id && nodeIdxById[p.parent_id] !== undefined) {
+        const pp = positions[nodeIdxById[p.parent_id]];
+        p.vx += (pp.x - p.x) * alpha * 0.05;
+        p.vy += (pp.y - p.y) * alpha * 0.05;
+        p.vz += (pp.z - p.z) * alpha * 0.04;
+      }
+    });
+
+    // Damping
+    positions.forEach(p => {
+      p.vx *= 0.6; p.vy *= 0.6; p.vz *= 0.6;
+      p.x += p.vx; p.y += p.vy; p.z += p.vz;
     });
   }
 
-  // Apply positions to mesh userData
   meshes3d.forEach((mesh, i) => {
     if (positions[i]) {
-      mesh.userData.forcePos.set(positions[i].x, positions[i].y, positions[i].z);
-      if (layout3d === 'force') {
-        mesh.userData.currentPos.copy(mesh.userData.forcePos);
-        mesh.position.copy(mesh.userData.forcePos);
+      mesh.userData.zonesPos.set(positions[i].x, positions[i].y, positions[i].z);
+      if (layout3d === 'zones') {
+        mesh.userData.currentPos.copy(mesh.userData.zonesPos);
+        mesh.position.copy(mesh.userData.zonesPos);
       }
     }
   });
@@ -4234,7 +4513,8 @@ function startDiscoveryReplay() {
     setTimeout(() => {
       mesh.visible = true;
       // Scale up animation
-      const targetScale = mesh.userData.sizeScale * hud3d.nodeSize;
+      const activeSize = hud3d.scaleByPageRank ? mesh.userData.pagerankSize : mesh.userData.defaultSize;
+      const targetScale = activeSize * hud3d.nodeSize;
       let frame = 0;
       function scaleUp() {
         frame++;
