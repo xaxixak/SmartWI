@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Workspace Intelligence - Graph Viewer</title>
 <script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
 /* ======================================================================
    CSS: Dark theme, CSS Grid layout
@@ -248,11 +249,19 @@ body {
   pointer-events: none;
   user-select: none;
 }
+.node-label-macro { font-size: 13px; font-weight: 700; fill: #fff; }
+.node-label-meso  { font-size: 11px; font-weight: 500; }
 
 .edge-line {
   fill: none;
-  stroke-width: 1.2;
+  stroke-width: 1;
 }
+.edge-line.edge-structural { stroke-width: 0.6; opacity: 0.35; }
+.edge-line.edge-data_flow { stroke-width: 1.8; }
+.edge-line.edge-communication { stroke-width: 1.8; }
+.edge-line.edge-event_async { stroke-width: 1.5; }
+.edge-line.edge-routing { stroke-width: 1.5; }
+.edge-line.edge-caching { stroke-width: 1.2; }
 
 .edge-label {
   font-size: 9px;
@@ -624,6 +633,152 @@ body {
   cursor: pointer;
   margin-left: 6px;
 }
+
+/* --- 3D Mode --- */
+#three-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: none;
+}
+#graph-container.mode-3d #three-canvas { display: block; }
+#graph-container.mode-3d svg { display: none; }
+
+.mode-toggle-group {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.mode-toggle-btn {
+  padding: 4px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mode-toggle-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+.mode-toggle-btn.active { background: var(--accent); color: #fff; }
+
+/* 3D HUD controls */
+#hud-3d {
+  position: absolute;
+  bottom: 16px; right: 16px;
+  background: rgba(10,10,15,0.85);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  z-index: 100;
+  min-width: 200px;
+  display: none;
+  font-size: 12px;
+  color: var(--text-primary);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+#hud-3d.visible { display: block; }
+#hud-3d label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+#hud-3d input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+#hud-3d .hud-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+#hud-3d .hud-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+#hud-3d .hud-row input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+/* 3D tooltip */
+#tooltip-3d {
+  position: absolute;
+  background: rgba(15,52,96,0.95);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 200;
+  max-width: 300px;
+  display: none;
+  color: var(--text-primary);
+}
+#tooltip-3d .tt3-name { font-weight: 600; font-size: 13px; }
+#tooltip-3d .tt3-type { color: var(--text-muted); font-size: 11px; }
+#tooltip-3d .tt3-detail { color: var(--text-muted); font-size: 10px; margin-top: 4px; }
+
+/* Architecture score badge */
+#arch-score-badge {
+  position: absolute;
+  top: 12px; right: 12px;
+  background: rgba(10,10,15,0.85);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  z-index: 100;
+  display: none;
+}
+
+/* Layout mode buttons in 3D */
+.layout-toggle-group {
+  display: flex;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.layout-toggle-btn {
+  padding: 4px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.layout-toggle-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+.layout-toggle-btn.active { background: var(--accent); color: #fff; }
+
+/* Replay button */
+.replay-btn {
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.replay-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+.replay-btn.active { background: #9B59B6; color: #fff; border-color: #9B59B6; pointer-events: none; }
+
+@keyframes orphan-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
 </style>
 </head>
 <body>
@@ -664,6 +819,22 @@ body {
 
       <!-- Help Button -->
       <button onclick="toggleModeHelp()" style="background:transparent; border:1px solid var(--border); border-radius:4px; padding:4px 8px; color:var(--text-muted); cursor:pointer; font-size:14px;" title="Show mode explanations">?</button>
+
+      <!-- 2D/3D Mode Toggle -->
+      <div class="mode-toggle-group">
+        <button class="mode-toggle-btn active" data-mode="2d" onclick="setViewMode('2d')">2D</button>
+        <button class="mode-toggle-btn" data-mode="3d" onclick="setViewMode('3d')">3D</button>
+      </div>
+
+      <!-- 3D Layout Modes (hidden in 2D) -->
+      <div id="layout-toggle-container" class="layout-toggle-group" style="display:none">
+        <button class="layout-toggle-btn active" data-layout="force" onclick="set3DLayout('force')">Force</button>
+        <button class="layout-toggle-btn" data-layout="cluster" onclick="set3DLayout('cluster')">Cluster</button>
+        <button class="layout-toggle-btn" data-layout="hierarchy" onclick="set3DLayout('hierarchy')">Hierarchy</button>
+      </div>
+
+      <!-- Replay (3D only) -->
+      <button id="replay-btn" class="replay-btn" onclick="startDiscoveryReplay()" style="display:none" title="Replay discovery animation">Replay</button>
     </div>
 
     <div id="watch-status-full" style="display:none; margin-left: 12px;">
@@ -748,6 +919,41 @@ body {
   <!-- Graph -->
   <div id="graph-container">
     <div class="tooltip" id="tooltip"></div>
+    <canvas id="three-canvas"></canvas>
+    <div id="tooltip-3d"></div>
+    <div id="arch-score-badge"></div>
+    <div id="hud-3d">
+      <div class="hud-title">3D Controls</div>
+      <div class="hud-row">
+        <input type="checkbox" id="hud-sphere" onchange="hudUpdate()">
+        <span style="color:#9B59B6">Sphere Mode</span>
+      </div>
+      <div class="hud-row">
+        <input type="checkbox" id="hud-show-links" onchange="hudUpdate()">
+        <span>Show All Links</span>
+      </div>
+      <label>Camera Distance: <span id="hud-cam-val">15</span>
+        <input type="range" id="hud-cam-dist" min="5" max="60" value="15" step="1" oninput="hudUpdate()">
+      </label>
+      <label>Node Size: <span id="hud-size-val">1.0</span>
+        <input type="range" id="hud-node-size" min="0.3" max="3" value="1" step="0.1" oninput="hudUpdate()">
+      </label>
+      <label>Breathing: <span id="hud-breath-val">0.05</span>
+        <input type="range" id="hud-breathing" min="0" max="0.2" value="0.05" step="0.01" oninput="hudUpdate()">
+      </label>
+      <label>Rotation Speed: <span id="hud-rot-val">0.02</span>
+        <input type="range" id="hud-rotation" min="0" max="0.1" value="0.02" step="0.005" oninput="hudUpdate()">
+      </label>
+      <label>Link Opacity: <span id="hud-link-val">0.15</span>
+        <input type="range" id="hud-link-opacity" min="0" max="0.5" value="0.15" step="0.01" oninput="hudUpdate()">
+      </label>
+      <label>Particle Speed: <span id="hud-part-val">0.3</span>
+        <input type="range" id="hud-particle" min="0.1" max="1" value="0.3" step="0.05" oninput="hudUpdate()">
+      </label>
+      <div style="border-top:1px solid var(--border);margin:8px 0;padding-top:8px">
+        <button onclick="reset3DCamera()" style="background:transparent;border:1px solid var(--border);border-radius:4px;padding:4px 10px;color:var(--text-muted);cursor:pointer;font-size:11px;width:100%">Reset Camera</button>
+      </div>
+    </div>
     <!-- Empty state when no graph loaded -->
     <div id="empty-state" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; color:var(--text-muted);">
       <div style="font-size:48px; margin-bottom:16px; opacity:0.5;">🧠</div>
@@ -918,6 +1124,33 @@ const TIER_COLORS = {
   micro: '#FF8C42',
 };
 
+// Per-type colors for richer visual differentiation
+const TYPE_COLORS = {
+  // macro — blues/purples (large, authoritative)
+  Workspace:   '#2C5F9E',
+  Project:     '#3A7BD5',
+  Service:     '#5B8FDB',
+  Resource:    '#7B68EE',
+  ExternalAPI: '#6A5ACD',
+  // meso — greens/teals (mid-level structure)
+  Module:      '#2EAD6A',
+  File:        '#45B87F',
+  Router:      '#20B2AA',
+  Collection:  '#3CB4A0',
+  InfraConfig: '#5F9EA0',
+  Queue:       '#48A9A6',
+  // micro — warm tones (leaf-level detail)
+  Endpoint:    '#E8853D',
+  Function:    '#D4703F',
+  AsyncHandler:'#C0673F',
+  DataModel:   '#E6A552',
+  Event:       '#D98EC0',
+  Middleware:  '#CD853F',
+  TypeDef:     '#BC8F8F',
+  CacheKey:    '#DAA520',
+  EnvVar:      '#B8860B',
+};
+
 // Tier lookup matching ontology.py NODE_TIER
 const NODE_TIER = {
   Workspace: 'macro', Project: 'macro', Service: 'macro',
@@ -932,6 +1165,29 @@ const NODE_TIER = {
 // Node category sets (from ontology.py)
 const INFRA_TYPES = new Set(['Resource', 'InfraConfig', 'Queue', 'EnvVar']);
 const DATA_TYPES  = new Set(['DataModel', 'Collection', 'TypeDef', 'CacheKey']);
+
+// Type-based X zone positions (fraction of width) for auto-arrangement
+// Flow: Structure → Files → Logic → Communication → Data → Infra
+const TYPE_ZONE = {
+  // Structure (far left) — the backbone
+  Workspace: 0.10, Project: 0.14, Service: 0.18,
+  // Files & Modules (left-center) — containers
+  Module: 0.28, File: 0.34,
+  // Logic (center) — the code
+  Function: 0.48, AsyncHandler: 0.52, Middleware: 0.44,
+  // Communication (center-right) — API surface
+  Endpoint: 0.62, Router: 0.58, ExternalAPI: 0.68,
+  // Data & Events (right) — state
+  DataModel: 0.78, Collection: 0.76, TypeDef: 0.80, Event: 0.74, Queue: 0.72,
+  // Infra (far right) — environment
+  Resource: 0.88, InfraConfig: 0.90, EnvVar: 0.92, CacheKey: 0.86,
+};
+
+// Zone labels for display (category name → X fraction)
+const ZONE_LABELS = {
+  'Structure': 0.14, 'Files': 0.31, 'Logic': 0.48,
+  'API': 0.63, 'Data': 0.76, 'Infra': 0.89,
+};
 // Everything else is "code" category -> circle
 
 // Edge groups matching ontology.py EDGE_GROUPS
@@ -952,16 +1208,16 @@ for (const [group, types] of Object.entries(EDGE_GROUPS)) {
   for (const t of types) EDGE_TYPE_TO_GROUP[t] = group;
 }
 
-// Edge group colors
+// Edge group colors — structural muted, dependencies vivid
 const EDGE_GROUP_COLORS = {
-  structural:    '#888888',
-  data_flow:     '#4A90D9',
-  communication: '#4A90D9',
-  event_async:   '#9B59B6',
-  caching:       '#E67E22',
-  routing:       '#2ECC71',
-  config_deploy: '#888888',
-  quality:       '#F39C12',
+  structural:    '#555555',
+  data_flow:     '#5DADE2',
+  communication: '#3498DB',
+  event_async:   '#BB8FCE',
+  caching:       '#F0B27A',
+  routing:       '#58D68D',
+  config_deploy: '#6C7A89',
+  quality:       '#F4D03F',
 };
 
 // -----------------------------------------------------------------------
@@ -1197,6 +1453,20 @@ function initGraph() {
         .attr('fill', color);
   }
 
+  // Zone background labels (fixed, behind everything)
+  const zoneG = svg.append('g').attr('class', 'zone-labels');
+  for (const [label, xFrac] of Object.entries(ZONE_LABELS)) {
+    zoneG.append('text')
+      .attr('x', width * xFrac)
+      .attr('y', 30)
+      .attr('text-anchor', 'middle')
+      .attr('fill', 'rgba(255,255,255,0.08)')
+      .attr('font-size', '28px')
+      .attr('font-weight', '700')
+      .attr('pointer-events', 'none')
+      .text(label);
+  }
+
   // Root group for zoom/pan
   g = svg.append('g');
   linkG = g.append('g').attr('class', 'links');
@@ -1210,12 +1480,41 @@ function initGraph() {
     });
   svg.call(zoom);
 
-  // Initialize simulation — optimized for large graphs
+  // Initialize simulation — optimized for large graphs with hierarchy
   simulation = d3.forceSimulation()
-    .force('link', d3.forceLink().id(d => d.id).distance(60))
-    .force('charge', d3.forceManyBody().strength(-120).theta(0.9).distanceMax(300))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(12).iterations(1))
+    .force('link', d3.forceLink().id(d => d.id).distance(d => {
+      // CONTAINS edges: tight clustering (parent-child close together)
+      if (d.type === 'CONTAINS' || d.type === 'DEFINES') return 40;
+      // IMPORTS: medium distance
+      if (d.type === 'IMPORTS') return 80;
+      // CALLS/communication: spread apart
+      return 100;
+    }))
+    .force('charge', d3.forceManyBody().strength(d => {
+      // Macro nodes repel more (keep them spaced apart as anchors)
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      if (tier === 'macro') return -250;
+      if (tier === 'meso') return -120;
+      return -60;
+    }).theta(0.9).distanceMax(400))
+    .force('center', d3.forceCenter(width / 2, height / 2).strength(0.02))
+    .force('x', d3.forceX().x(d => {
+      // Group by type zone: Structure→Files→Logic→API→Data→Infra
+      const frac = TYPE_ZONE[d.type] || 0.5;
+      return width * frac;
+    }).strength(0.08))
+    .force('y', d3.forceY().y(d => {
+      // Push macro nodes toward top, micro toward bottom
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      if (tier === 'macro') return height * 0.2;
+      if (tier === 'meso') return height * 0.5;
+      return height * 0.8;
+    }).strength(0.08))
+    .force('collision', d3.forceCollide().radius(d => {
+      const tierR = { macro: 30, meso: 18, micro: 10 };
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      return tierR[tier] || 10;
+    }).iterations(1))
     .alphaDecay(0.05)
     .velocityDecay(0.4)
     .on('tick', ticked);
@@ -1330,6 +1629,7 @@ function updateGraph() {
   const edgeMerged = edgeEnter.merge(edgeGroups);
 
   edgeMerged.select('.edge-line')
+    .attr('class', d => `edge-line edge-${d.group}`)
     .attr('stroke', d => EDGE_GROUP_COLORS[d.group] || '#888')
     .attr('stroke-dasharray', d => d.is_stale ? '4,3' : null)
     .attr('marker-end', d => `url(#arrow-${d.group})`);
@@ -1353,7 +1653,7 @@ function updateGraph() {
   nodeEnter.append('text')
     .attr('class', 'node-label')
     .attr('dy', d => {
-      const r = nodeRadius(edgeCounts[d.id] || 0);
+      const r = nodeRadius(d, edgeCounts[d.id] || 0);
       return r + 12;
     });
 
@@ -1379,27 +1679,47 @@ function updateGraph() {
 
   nodeMerged.select('.node-shape')
     .attr('d', d => {
-      const r = nodeRadius(edgeCounts[d.id] || 0);
+      const r = nodeRadius(d, edgeCounts[d.id] || 0);
       return nodeShape(d, r);
     })
     .attr('fill', d => {
-      const tier = d.tier || NODE_TIER[d.type] || 'micro';
-      return TIER_COLORS[tier] || '#FF8C42';
+      return TYPE_COLORS[d.type] || TIER_COLORS[d.tier || NODE_TIER[d.type] || 'micro'] || '#FF8C42';
     })
-    .attr('stroke', d => d.is_stale ? '#e74c3c' : 'rgba(255,255,255,0.2)')
-    .attr('stroke-width', d => d.is_stale ? 2 : 1)
+    .attr('stroke', d => {
+      if (d.is_stale) return '#e74c3c';
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      if (tier === 'macro') return 'rgba(255,255,255,0.5)';
+      return 'rgba(255,255,255,0.15)';
+    })
+    .attr('stroke-width', d => {
+      if (d.is_stale) return 2;
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      if (tier === 'macro') return 2.5;
+      if (tier === 'meso') return 1.2;
+      return 0.5;
+    })
     .attr('stroke-dasharray', d => d.is_stale ? '4,2' : null)
     .attr('opacity', d => {
       if (filters.search && !d.name.toLowerCase().includes(filters.search) &&
           !d.id.toLowerCase().includes(filters.search)) return 0.3;
-      return 0.85;
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      if (tier === 'macro') return 1.0;
+      if (tier === 'meso') return 0.9;
+      return 0.75;
     });
 
   nodeMerged.select('.node-label')
-    .text(d => truncate(d.name, 18))
+    .text(d => {
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      return truncate(d.name, tier === 'macro' ? 24 : 18);
+    })
     .attr('dy', d => {
-      const r = nodeRadius(edgeCounts[d.id] || 0);
+      const r = nodeRadius(d, edgeCounts[d.id] || 0);
       return r + 12;
+    })
+    .attr('class', d => {
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      return `node-label node-label-${tier}`;
     });
 
   // Update selected + focal highlight
@@ -1424,14 +1744,40 @@ function updateGraph() {
     }, 3000); // Clear after 3 seconds
   }
 
+  // Build parent map for clustering (children pulled toward their CONTAINS parent)
+  const parentPos = {};
+  for (const link of links) {
+    if (link.type === 'CONTAINS' || link.type === 'DEFINES') {
+      const childId = typeof link.target === 'object' ? link.target.id : link.target;
+      const parentId = typeof link.source === 'object' ? link.source.id : link.source;
+      parentPos[childId] = parentId;
+    }
+  }
+  // Custom cluster force: gently pull children toward parent position
+  simulation.force('cluster', alpha => {
+    const nodeMap = {};
+    for (const n of nodes) nodeMap[n.id] = n;
+    for (const n of nodes) {
+      const pid = parentPos[n.id];
+      if (pid && nodeMap[pid]) {
+        const parent = nodeMap[pid];
+        n.vx += (parent.x - n.x) * alpha * 0.04;
+        n.vy += (parent.y - n.y) * alpha * 0.04;
+      }
+    }
+  });
+
   // Restart simulation — lower alpha = settles faster = less CPU
   simulation.nodes(nodes);
   simulation.force('link').links(links);
   simulation.alpha(0.4).restart();
 }
 
-function nodeRadius(edgeCount) {
-  return Math.max(6, Math.min(20, 6 + edgeCount * 1.5));
+function nodeRadius(d, edgeCount) {
+  const tierBase = { macro: 20, meso: 12, micro: 6 };
+  const tier = d.tier || NODE_TIER[d.type] || 'micro';
+  const base = tierBase[tier] || 6;
+  return Math.max(base, Math.min(base + 10, base + edgeCount * 0.5));
 }
 
 function truncate(str, len) {
@@ -1766,6 +2112,11 @@ async function reloadGraph() {
     buildTreeView();
     updateGraph();
     updateStats();
+
+    // Reheat simulation so nodes visibly re-settle after data change
+    if (simulation) {
+      simulation.alpha(0.3).restart();
+    }
 
     // Auto-navigate: pan to the first changed/added node
     if (changedNodeIds.length > 0) {
@@ -3000,6 +3351,915 @@ loadData();
 initLiveUpdates();
 initRuntimeLayer();
 initAgentActivityLayer();
+
+// =======================================================================
+// 3D MODE - Three.js graph visualization
+// =======================================================================
+
+let viewMode = '2d'; // '2d' or '3d'
+let scene3d = null, camera3d = null, renderer3d = null;
+let meshes3d = [], linkLines3d = [], linkDataArr3d = [];
+let animFrame3d = null;
+let travelingParticles3d = null;
+let layout3d = 'force'; // 'force', 'cluster', 'hierarchy'
+let intelligenceData = null;
+
+// 3D type colors (hex numbers for Three.js)
+const TYPE_COLORS_3D = {
+  Module:      0x4A90D9,
+  File:        0x50C878,
+  Function:    0xFF8C42,
+  Class:       0x9B59B6,
+  Event:       0xE74C3C,
+  Workspace:   0x2C5F9E,
+  Project:     0x3A7BD5,
+  Service:     0x5B8FDB,
+  Resource:    0x7B68EE,
+  ExternalAPI: 0x6A5ACD,
+  Router:      0x20B2AA,
+  Collection:  0x3CB4A0,
+  InfraConfig: 0x5F9EA0,
+  Queue:       0x48A9A6,
+  Endpoint:    0xE8853D,
+  AsyncHandler:0xC0673F,
+  DataModel:   0xE6A552,
+  Middleware:  0xCD853F,
+  TypeDef:     0xBC8F8F,
+  CacheKey:    0xDAA520,
+  EnvVar:      0xB8860B,
+};
+
+// Community colors for cluster tinting
+const COMMUNITY_COLORS = [
+  0x4A90D9, 0x50C878, 0xFF8C42, 0x9B59B6, 0xE74C3C,
+  0x2ECC71, 0xE67E22, 0x1ABC9C, 0xF39C12, 0x3498DB,
+  0xE91E63, 0x00BCD4, 0x8BC34A, 0xFF5722, 0x607D8B,
+];
+
+// --- KlakMath utilities (ported from Oracle v2) ---
+function xxhash3d(seed, data) {
+  let h = ((seed + 374761393) >>> 0);
+  h = ((h + (data * 3266489917 >>> 0)) >>> 0);
+  h = ((((h << 17) | (h >>> 15)) * 668265263) >>> 0);
+  h ^= h >>> 15;
+  h = ((h * 2246822519) >>> 0);
+  h ^= h >>> 13;
+  h = ((h * 3266489917) >>> 0);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+function hashOnSphere3d(seed, data) {
+  const phi = xxhash3d(seed, data) * Math.PI * 2;
+  const cosTheta = xxhash3d(seed, data + 0x10000000) * 2 - 1;
+  const sinTheta = Math.sqrt(1 - cosTheta * cosTheta);
+  return new THREE.Vector3(
+    sinTheta * Math.cos(phi),
+    sinTheta * Math.sin(phi),
+    cosTheta
+  );
+}
+
+function cdsTween3d(state, target, speed, dt) {
+  const n1 = state.v - (state.x - target) * (speed * speed * dt);
+  const n2 = 1 + speed * dt;
+  const nv = n1 / (n2 * n2);
+  return { x: state.x + nv * dt, v: nv };
+}
+
+function noise1D_3d(p, seed) {
+  const i = Math.floor(p);
+  const f = p - i;
+  const u = f * f * (3 - 2 * f);
+  const g0 = xxhash3d(seed, i) * 2 - 1;
+  const g1 = xxhash3d(seed, i + 1) * 2 - 1;
+  return g0 * (1 - u) + g1 * u;
+}
+
+function fractalNoise3d(p, octaves, seed) {
+  let f = 0, w = 1, max = 0;
+  for (let i = 0; i < octaves; i++) {
+    f += w * noise1D_3d(p, seed + i);
+    max += w;
+    p *= 2;
+    w *= 0.5;
+  }
+  return f / max;
+}
+
+// --- Simple BFS clustering ---
+function clusterNodes3d(nodes, edges) {
+  const clusters = new Map();
+  const adj = new Map();
+  nodes.forEach(n => adj.set(n.id, new Set()));
+  edges.forEach(e => {
+    const src = e.source_id || e.source;
+    const tgt = e.target_id || e.target;
+    if (adj.has(src)) adj.get(src).add(tgt);
+    if (adj.has(tgt)) adj.get(tgt).add(src);
+  });
+
+  let clusterCount = 0;
+  const visited = new Set();
+  const sorted = [...nodes].sort((a, b) => (adj.get(b.id)?.size || 0) - (adj.get(a.id)?.size || 0));
+
+  sorted.forEach(node => {
+    if (visited.has(node.id)) return;
+    const queue = [node.id];
+    const members = [];
+    while (queue.length > 0 && members.length < 50) {
+      const cur = queue.shift();
+      if (visited.has(cur)) continue;
+      visited.add(cur);
+      members.push(cur);
+      (adj.get(cur) || new Set()).forEach(n => { if (!visited.has(n)) queue.push(n); });
+    }
+    members.forEach(id => clusters.set(id, clusterCount));
+    clusterCount++;
+  });
+
+  return clusters;
+}
+
+// --- HUD state ---
+const hud3d = {
+  camDistance: 15, nodeSize: 1.0, breathingIntensity: 0.05,
+  rotationSpeed: 0.02, linkOpacity: 0.15, particleSpeed: 0.3,
+  showAllLinks: false, sphereMode: false,
+};
+const camX3d = { x: 0, v: 0 };
+const camY3d = { x: 0, v: 0 };
+const targetAngle3d = { x: 0, y: 0 };
+let activeNode3d = null; // hovered/selected node id
+let selectedNode3d = null;
+let hudHovered3d = false;
+
+function hudUpdate() {
+  hud3d.camDistance = parseFloat(document.getElementById('hud-cam-dist').value);
+  hud3d.nodeSize = parseFloat(document.getElementById('hud-node-size').value);
+  hud3d.breathingIntensity = parseFloat(document.getElementById('hud-breathing').value);
+  hud3d.rotationSpeed = parseFloat(document.getElementById('hud-rotation').value);
+  hud3d.linkOpacity = parseFloat(document.getElementById('hud-link-opacity').value);
+  hud3d.particleSpeed = parseFloat(document.getElementById('hud-particle').value);
+  hud3d.showAllLinks = document.getElementById('hud-show-links').checked;
+  hud3d.sphereMode = document.getElementById('hud-sphere').checked;
+
+  document.getElementById('hud-cam-val').textContent = hud3d.camDistance;
+  document.getElementById('hud-size-val').textContent = hud3d.nodeSize.toFixed(1);
+  document.getElementById('hud-breath-val').textContent = hud3d.breathingIntensity.toFixed(2);
+  document.getElementById('hud-rot-val').textContent = hud3d.rotationSpeed.toFixed(3);
+  document.getElementById('hud-link-val').textContent = hud3d.linkOpacity.toFixed(2);
+  document.getElementById('hud-part-val').textContent = hud3d.particleSpeed.toFixed(2);
+}
+
+function reset3DCamera() {
+  camX3d.x = 0; camX3d.v = 0;
+  camY3d.x = 0; camY3d.v = 0;
+  targetAngle3d.x = 0; targetAngle3d.y = 0;
+  hud3d.camDistance = 15;
+  document.getElementById('hud-cam-dist').value = 15;
+  document.getElementById('hud-cam-val').textContent = '15';
+}
+
+// --- 2D/3D mode switch ---
+function setViewMode(mode) {
+  viewMode = mode;
+  const container = document.getElementById('graph-container');
+
+  // Update toggle buttons
+  document.querySelectorAll('.mode-toggle-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+
+  // Show/hide 3D-specific toolbar controls
+  document.getElementById('layout-toggle-container').style.display = mode === '3d' ? 'flex' : 'none';
+  document.getElementById('replay-btn').style.display = mode === '3d' ? '' : 'none';
+
+  if (mode === '3d') {
+    container.classList.add('mode-3d');
+    document.getElementById('hud-3d').classList.add('visible');
+    init3DScene();
+  } else {
+    container.classList.remove('mode-3d');
+    document.getElementById('hud-3d').classList.remove('visible');
+    document.getElementById('arch-score-badge').style.display = 'none';
+    destroy3DScene();
+  }
+}
+
+// --- Fetch intelligence data ---
+async function fetchIntelligence() {
+  if (!currentGraphPath) return null;
+  try {
+    const resp = await fetch(`/api/intelligence?path=${encodeURIComponent(currentGraphPath)}`);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    console.log('[3D] Intelligence API not available:', e.message);
+    return null;
+  }
+}
+
+// --- Initialize 3D scene ---
+async function init3DScene() {
+  if (!rawData || rawData.nodes.length === 0) return;
+
+  // Fetch intelligence data
+  intelligenceData = await fetchIntelligence();
+
+  const container = document.getElementById('graph-container');
+  const canvas = document.getElementById('three-canvas');
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+
+  // Scene
+  scene3d = new THREE.Scene();
+  scene3d.background = new THREE.Color(0x0a0a0f);
+
+  // Camera
+  camera3d = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
+  camera3d.position.z = 15;
+
+  // Renderer
+  renderer3d = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+  renderer3d.setSize(width, height);
+  renderer3d.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  // Lights
+  const ambient = new THREE.AmbientLight(0x606080, 0.8);
+  scene3d.add(ambient);
+
+  const directional = new THREE.DirectionalLight(0xffffff, 1.2);
+  directional.position.set(5, 5, 5);
+  scene3d.add(directional);
+
+  const backLight = new THREE.DirectionalLight(0x4080ff, 0.4);
+  backLight.position.set(-5, -3, -5);
+  scene3d.add(backLight);
+
+  const rimLight = new THREE.PointLight(0x4A90D9, 0.5, 30);
+  rimLight.position.set(0, 0, 0);
+  scene3d.add(rimLight);
+
+  // Build data
+  const nodes = rawData.nodes;
+  const edges = rawData.edges;
+  const clusters = intelligenceData && intelligenceData.communities
+    ? buildCommunityMap(intelligenceData.communities)
+    : clusterNodes3d(nodes, edges);
+
+  // PageRank for sizing
+  const pageRanks = intelligenceData && intelligenceData.pagerank
+    ? intelligenceData.pagerank
+    : {};
+
+  // Orphan detection
+  const orphanSet = intelligenceData && intelligenceData.orphans
+    ? new Set(intelligenceData.orphans)
+    : new Set();
+
+  // Architecture score
+  if (intelligenceData && intelligenceData.architecture_score != null) {
+    const badge = document.getElementById('arch-score-badge');
+    const score = typeof intelligenceData.architecture_score === 'object'
+      ? intelligenceData.architecture_score.total
+      : intelligenceData.architecture_score;
+    badge.textContent = `Score: ${Math.round(score)}/100`;
+    badge.style.display = 'block';
+  }
+
+  // Cluster centers
+  const clusterCenters = new Map();
+  const maxCluster = Math.max(0, ...Array.from(clusters.values()));
+  for (let i = 0; i <= maxCluster; i++) {
+    clusterCenters.set(i, hashOnSphere3d(42, i * 1000).multiplyScalar(6));
+  }
+
+  // Node meshes
+  const sharedGeo = new THREE.SphereGeometry(0.08, 16, 16);
+  meshes3d = [];
+  const nodeMap3d = new Map();
+
+  // Tier Y offsets for hierarchy layout
+  const TIER_Y = { macro: 4, meso: 0, micro: -4 };
+
+  nodes.forEach((node, i) => {
+    nodeMap3d.set(node.id, i);
+
+    const typeColor = TYPE_COLORS_3D[node.type] || 0x888888;
+    const communityId = clusters.get(node.id) || 0;
+    const isOrphan = orphanSet.has(node.id);
+
+    // Scale by PageRank
+    const rank = pageRanks[node.id] || 0;
+    const sizeScale = 0.5 + Math.min(rank * 500, 3);
+
+    const material = new THREE.MeshStandardMaterial({
+      color: typeColor,
+      metalness: 0.3,
+      roughness: 0.4,
+      emissive: isOrphan ? 0xE74C3C : typeColor,
+      emissiveIntensity: isOrphan ? 0.4 : 0.1,
+    });
+
+    const mesh = new THREE.Mesh(sharedGeo, material);
+
+    // Cluster position
+    const clusterCenter = clusterCenters.get(communityId) || new THREE.Vector3();
+    const localPos = hashOnSphere3d(communityId + 100, i).multiplyScalar(1.5 + xxhash3d(42, i));
+    const clusterPos = clusterCenter.clone().add(localPos);
+
+    // Sphere position
+    const spherePos = hashOnSphere3d(42, i).multiplyScalar(6);
+
+    // Force layout position (random spread)
+    const forcePos = new THREE.Vector3(
+      (xxhash3d(1, i) - 0.5) * 12,
+      (xxhash3d(2, i) - 0.5) * 12,
+      (xxhash3d(3, i) - 0.5) * 12
+    );
+
+    // Hierarchy position
+    const tier = node.tier || NODE_TIER[node.type] || 'micro';
+    const typeZone = TYPE_ZONE[node.type] || 0.5;
+    const hierPos = new THREE.Vector3(
+      (typeZone - 0.5) * 16,
+      TIER_Y[tier] || -4,
+      (xxhash3d(5, i) - 0.5) * 8
+    );
+
+    // Start at current layout position
+    let startPos;
+    if (layout3d === 'cluster') startPos = clusterPos.clone();
+    else if (layout3d === 'hierarchy') startPos = hierPos.clone();
+    else startPos = forcePos.clone();
+
+    mesh.position.copy(startPos);
+    mesh.scale.setScalar(sizeScale);
+
+    mesh.userData = {
+      node, index: i,
+      clusterPos: clusterPos.clone(),
+      spherePos: spherePos.clone(),
+      forcePos: forcePos.clone(),
+      hierPos: hierPos.clone(),
+      currentPos: startPos.clone(),
+      sizeScale,
+      isOrphan,
+      communityId,
+    };
+
+    scene3d.add(mesh);
+    meshes3d.push(mesh);
+  });
+
+  // Adjacency for link hover
+  const adj3d = new Map();
+  nodes.forEach(n => adj3d.set(n.id, new Set()));
+  edges.forEach(e => {
+    const src = e.source_id || e.source;
+    const tgt = e.target_id || e.target;
+    if (adj3d.has(src)) adj3d.get(src).add(tgt);
+    if (adj3d.has(tgt)) adj3d.get(tgt).add(src);
+  });
+
+  // Link lines
+  linkLines3d = [];
+  linkDataArr3d = [];
+  const maxLinks = Math.min(edges.length, 3000);
+
+  for (let i = 0; i < maxLinks; i++) {
+    const edge = edges[i];
+    const srcIdx = nodeMap3d.get(edge.source_id || edge.source);
+    const tgtIdx = nodeMap3d.get(edge.target_id || edge.target);
+    if (srcIdx === undefined || tgtIdx === undefined) continue;
+
+    const group = EDGE_TYPE_TO_GROUP[edge.type] || 'structural';
+    const groupColor = EDGE_GROUP_COLORS[group] || '#888888';
+    const colorNum = parseInt(groupColor.replace('#', ''), 16);
+
+    const lineMat = new THREE.LineBasicMaterial({
+      color: colorNum,
+      opacity: 0,
+      transparent: true,
+    });
+
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([
+      meshes3d[srcIdx].position.clone(),
+      meshes3d[tgtIdx].position.clone(),
+    ]);
+
+    const line = new THREE.Line(lineGeo, lineMat);
+    scene3d.add(line);
+    linkLines3d.push(line);
+
+    linkDataArr3d.push({
+      sourceIdx: srcIdx, targetIdx: tgtIdx,
+      sourceId: edge.source_id || edge.source,
+      targetId: edge.target_id || edge.target,
+      offset: xxhash3d(42, i + 5000),
+      speed: 0.2 + xxhash3d(42, i + 6000) * 0.3,
+      line,
+    });
+  }
+
+  // Traveling particles
+  const particleCount = Math.min(maxLinks, 1500);
+  const particleGeo = new THREE.BufferGeometry();
+  const particlePositions = new Float32Array(particleCount * 3);
+  for (let i = 0; i < particleCount * 3; i++) particlePositions[i] = 0;
+  particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+
+  const particleMat = new THREE.PointsMaterial({
+    size: 0.06,
+    color: 0x4A90D9,
+    transparent: true,
+    opacity: 0.9,
+    blending: THREE.AdditiveBlending,
+  });
+
+  travelingParticles3d = new THREE.Points(particleGeo, particleMat);
+  travelingParticles3d.visible = false;
+  scene3d.add(travelingParticles3d);
+
+  // --- Force simulation in 3D ---
+  if (layout3d === 'force') {
+    run3DForce(nodes, edges, nodeMap3d, adj3d);
+  }
+
+  // --- Animation loop ---
+  let time3d = 0;
+  const dt = 1/60;
+
+  function animate3d() {
+    time3d += 0.016;
+
+    // Spring camera
+    const newCamX = cdsTween3d(camX3d, targetAngle3d.x, 3, dt);
+    camX3d.x = newCamX.x; camX3d.v = newCamX.v;
+
+    const newCamY = cdsTween3d(camY3d, targetAngle3d.y, 3, dt);
+    camY3d.x = newCamY.x; camY3d.v = newCamY.v;
+
+    const camDist = hud3d.camDistance;
+    camera3d.position.x = Math.sin(camX3d.x) * camDist;
+    camera3d.position.z = Math.cos(camX3d.x) * camDist;
+    camera3d.position.y = camY3d.x * 5;
+    camera3d.lookAt(0, 0, 0);
+
+    // Breathing + position update
+    const isSphere = hud3d.sphereMode;
+    meshes3d.forEach((mesh, i) => {
+      const ud = mesh.userData;
+      let targetPos;
+      if (isSphere) {
+        targetPos = ud.spherePos;
+      } else if (layout3d === 'cluster') {
+        targetPos = ud.clusterPos;
+      } else if (layout3d === 'hierarchy') {
+        targetPos = ud.hierPos;
+      } else {
+        targetPos = ud.forcePos;
+      }
+
+      ud.currentPos.lerp(targetPos, 0.05);
+
+      // Breathing
+      const n = fractalNoise3d(time3d * 0.5 + i * 0.1, 2, 42);
+      const scale = 1 + n * hud3d.breathingIntensity;
+      mesh.position.copy(ud.currentPos).multiplyScalar(scale);
+
+      // Node size (base + pagerank)
+      mesh.scale.setScalar(ud.sizeScale * hud3d.nodeSize);
+
+      // Orphan pulsing
+      if (ud.isOrphan) {
+        const mat = mesh.material;
+        mat.emissiveIntensity = 0.3 + 0.3 * Math.sin(time3d * 3 + i);
+      }
+
+      // Gentle rotation
+      mesh.rotation.y = time3d * 0.2 + i * 0.01;
+    });
+
+    // Global rotation
+    scene3d.rotation.y = time3d * hud3d.rotationSpeed;
+
+    // Links
+    const activeId = activeNode3d;
+    const showAll = hud3d.showAllLinks;
+    let particleIdx = 0;
+    const positions = travelingParticles3d.geometry.attributes.position.array;
+
+    linkDataArr3d.forEach(ld => {
+      const mat = ld.line.material;
+      const isConn = activeId && (ld.sourceId === activeId || ld.targetId === activeId);
+
+      const srcPos = meshes3d[ld.sourceIdx].position;
+      const tgtPos = meshes3d[ld.targetIdx].position;
+
+      const linePos = ld.line.geometry.attributes.position.array;
+      linePos[0] = srcPos.x; linePos[1] = srcPos.y; linePos[2] = srcPos.z;
+      linePos[3] = tgtPos.x; linePos[4] = tgtPos.y; linePos[5] = tgtPos.z;
+      ld.line.geometry.attributes.position.needsUpdate = true;
+
+      if (showAll) {
+        mat.opacity = 0.04;
+      } else if (isConn) {
+        mat.opacity = hud3d.linkOpacity;
+      } else {
+        mat.opacity = 0;
+      }
+
+      // Particles on connected links
+      if (isConn && particleIdx < 1500) {
+        const t = ((time3d * ld.speed * hud3d.particleSpeed + ld.offset) % 1);
+        positions[particleIdx * 3] = srcPos.x + (tgtPos.x - srcPos.x) * t;
+        positions[particleIdx * 3 + 1] = srcPos.y + (tgtPos.y - srcPos.y) * t;
+        positions[particleIdx * 3 + 2] = srcPos.z + (tgtPos.z - srcPos.z) * t;
+        particleIdx++;
+      }
+    });
+
+    // Hide remaining particles
+    for (let i = particleIdx; i < 1500; i++) {
+      positions[i * 3] = 0;
+      positions[i * 3 + 1] = -1000;
+      positions[i * 3 + 2] = 0;
+    }
+
+    travelingParticles3d.visible = !!activeId;
+    travelingParticles3d.geometry.attributes.position.needsUpdate = true;
+
+    renderer3d.render(scene3d, camera3d);
+    animFrame3d = requestAnimationFrame(animate3d);
+  }
+
+  animate3d();
+
+  // --- Mouse interaction ---
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  let isDragging3d = false;
+  let dragStart3d = { x: 0, y: 0 };
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (hudHovered3d) return;
+    isDragging3d = true;
+    dragStart3d = { x: e.clientX, y: e.clientY };
+    canvas.style.cursor = 'grabbing';
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    isDragging3d = false;
+    canvas.style.cursor = 'default';
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    isDragging3d = false;
+    canvas.style.cursor = 'default';
+    hideTooltip3d();
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    if (isDragging3d) {
+      const dx = (e.clientX - dragStart3d.x) * 0.005;
+      const dy = (e.clientY - dragStart3d.y) * 0.003;
+      targetAngle3d.x += dx;
+      targetAngle3d.y = Math.max(-0.5, Math.min(0.5, targetAngle3d.y - dy));
+      dragStart3d = { x: e.clientX, y: e.clientY };
+    }
+
+    // Raycast
+    raycaster.setFromCamera(mouse, camera3d);
+    const intersects = raycaster.intersectObjects(meshes3d);
+
+    if (intersects.length > 0) {
+      const hovered = intersects[0].object.userData.node;
+      activeNode3d = selectedNode3d || hovered.id;
+      if (!isDragging3d) canvas.style.cursor = 'pointer';
+
+      // Highlight emissive
+      meshes3d.forEach(m => {
+        if (!m.userData.isOrphan) {
+          m.material.emissiveIntensity = (m === intersects[0].object) ? 0.5 : 0.1;
+        }
+      });
+
+      // Tooltip
+      showTooltip3d(e, hovered);
+    } else {
+      if (!selectedNode3d) activeNode3d = null;
+      if (!isDragging3d) canvas.style.cursor = 'default';
+      meshes3d.forEach(m => {
+        if (!m.userData.isOrphan) m.material.emissiveIntensity = 0.1;
+      });
+      hideTooltip3d();
+    }
+  });
+
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera3d);
+    const intersects = raycaster.intersectObjects(meshes3d);
+
+    if (intersects.length > 0) {
+      const clicked = intersects[0].object.userData.node;
+      if (selectedNode3d === clicked.id) {
+        selectedNode3d = null;
+        activeNode3d = null;
+      } else {
+        selectedNode3d = clicked.id;
+        activeNode3d = clicked.id;
+        // Highlight selected mesh
+        meshes3d.forEach(m => {
+          m.material.emissive.setHex(
+            m.userData.isOrphan ? 0xE74C3C :
+            (m.userData.node.id === clicked.id ? 0xffffff : (TYPE_COLORS_3D[m.userData.node.type] || 0x888888))
+          );
+          if (!m.userData.isOrphan) {
+            m.material.emissiveIntensity = m.userData.node.id === clicked.id ? 0.6 : 0.1;
+          }
+        });
+      }
+      // Show in detail drawer (reuse 2D panel)
+      selectNode(clicked);
+    }
+  });
+
+  canvas.addEventListener('dblclick', () => {
+    selectedNode3d = null;
+    activeNode3d = null;
+  });
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 1.5 : -1.5;
+    hud3d.camDistance = Math.max(5, Math.min(60, hud3d.camDistance + delta));
+    document.getElementById('hud-cam-dist').value = hud3d.camDistance;
+    document.getElementById('hud-cam-val').textContent = Math.round(hud3d.camDistance);
+  }, { passive: false });
+
+  // HUD hover prevention
+  const hudEl = document.getElementById('hud-3d');
+  hudEl.addEventListener('mouseenter', () => { hudHovered3d = true; });
+  hudEl.addEventListener('mouseleave', () => { hudHovered3d = false; });
+
+  // Window resize
+  window._resize3d = () => {
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    camera3d.aspect = w / h;
+    camera3d.updateProjectionMatrix();
+    renderer3d.setSize(w, h);
+  };
+  window.addEventListener('resize', window._resize3d);
+}
+
+// --- Tooltip helpers ---
+function showTooltip3d(event, node) {
+  const tt = document.getElementById('tooltip-3d');
+  const container = document.getElementById('graph-container');
+  const rect = container.getBoundingClientRect();
+  const tier = node.tier || NODE_TIER[node.type] || 'micro';
+
+  let detailHtml = '';
+  if (intelligenceData && intelligenceData.pagerank && intelligenceData.pagerank[node.id]) {
+    detailHtml += `PageRank: ${intelligenceData.pagerank[node.id].toFixed(4)}`;
+  }
+  if (node.userData && node.userData.communityId !== undefined) {
+    detailHtml += (detailHtml ? ' | ' : '') + `Community: ${node.userData?.communityId}`;
+  }
+
+  tt.innerHTML = `
+    <div class="tt3-name">${node.name || node.id}</div>
+    <div class="tt3-type">${node.type} (${tier})</div>
+    ${detailHtml ? `<div class="tt3-detail">${detailHtml}</div>` : ''}
+  `;
+  tt.style.display = 'block';
+  tt.style.left = (event.clientX - rect.left + 15) + 'px';
+  tt.style.top = (event.clientY - rect.top - 10) + 'px';
+}
+
+function hideTooltip3d() {
+  document.getElementById('tooltip-3d').style.display = 'none';
+}
+
+// --- Build community map from intelligence data ---
+function buildCommunityMap(communities) {
+  const map = new Map();
+  if (!communities) return map;
+  Object.entries(communities).forEach(([nodeId, communityId]) => {
+    map.set(nodeId, communityId);
+  });
+  return map;
+}
+
+// --- 3D Force simulation (simple repulsion + attraction) ---
+function run3DForce(nodes, edges, nodeMap3d, adj3d) {
+  // Simple force iterations to position nodes
+  const positions = nodes.map((n, i) => ({
+    x: (xxhash3d(1, i) - 0.5) * 12,
+    y: (xxhash3d(2, i) - 0.5) * 12,
+    z: (xxhash3d(3, i) - 0.5) * 12,
+    vx: 0, vy: 0, vz: 0,
+  }));
+
+  const edgeList = edges.map(e => ({
+    src: nodeMap3d.get(e.source_id || e.source),
+    tgt: nodeMap3d.get(e.target_id || e.target),
+  })).filter(e => e.src !== undefined && e.tgt !== undefined);
+
+  // Run 100 iterations
+  for (let iter = 0; iter < 100; iter++) {
+    const alpha = 0.3 * (1 - iter / 100);
+
+    // Repulsion (Barnes-Hut simplified)
+    for (let i = 0; i < positions.length; i++) {
+      for (let j = i + 1; j < Math.min(positions.length, i + 50); j++) {
+        const dx = positions[i].x - positions[j].x;
+        const dy = positions[i].y - positions[j].y;
+        const dz = positions[i].z - positions[j].z;
+        const dist2 = dx*dx + dy*dy + dz*dz + 0.01;
+        const force = alpha * 2 / dist2;
+        positions[i].vx += dx * force;
+        positions[i].vy += dy * force;
+        positions[i].vz += dz * force;
+        positions[j].vx -= dx * force;
+        positions[j].vy -= dy * force;
+        positions[j].vz -= dz * force;
+      }
+    }
+
+    // Attraction along edges
+    edgeList.forEach(({ src, tgt }) => {
+      const dx = positions[tgt].x - positions[src].x;
+      const dy = positions[tgt].y - positions[src].y;
+      const dz = positions[tgt].z - positions[src].z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) + 0.01;
+      const force = alpha * (dist - 2) * 0.05;
+      positions[src].vx += dx / dist * force;
+      positions[src].vy += dy / dist * force;
+      positions[src].vz += dz / dist * force;
+      positions[tgt].vx -= dx / dist * force;
+      positions[tgt].vy -= dy / dist * force;
+      positions[tgt].vz -= dz / dist * force;
+    });
+
+    // Centering
+    let cx = 0, cy = 0, cz = 0;
+    positions.forEach(p => { cx += p.x; cy += p.y; cz += p.z; });
+    cx /= positions.length; cy /= positions.length; cz /= positions.length;
+
+    // Apply
+    positions.forEach(p => {
+      p.vx *= 0.6;
+      p.vy *= 0.6;
+      p.vz *= 0.6;
+      p.x += p.vx - cx * 0.01;
+      p.y += p.vy - cy * 0.01;
+      p.z += p.vz - cz * 0.01;
+    });
+  }
+
+  // Apply positions to mesh userData
+  meshes3d.forEach((mesh, i) => {
+    if (positions[i]) {
+      mesh.userData.forcePos.set(positions[i].x, positions[i].y, positions[i].z);
+      if (layout3d === 'force') {
+        mesh.userData.currentPos.copy(mesh.userData.forcePos);
+        mesh.position.copy(mesh.userData.forcePos);
+      }
+    }
+  });
+}
+
+// --- Destroy 3D scene ---
+function destroy3DScene() {
+  if (animFrame3d) {
+    cancelAnimationFrame(animFrame3d);
+    animFrame3d = null;
+  }
+
+  if (scene3d) {
+    // Dispose meshes
+    meshes3d.forEach(mesh => {
+      mesh.material.dispose();
+      scene3d.remove(mesh);
+    });
+    meshes3d = [];
+
+    // Dispose links
+    linkLines3d.forEach(line => {
+      line.geometry.dispose();
+      line.material.dispose();
+      scene3d.remove(line);
+    });
+    linkLines3d = [];
+    linkDataArr3d = [];
+
+    // Dispose particles
+    if (travelingParticles3d) {
+      travelingParticles3d.geometry.dispose();
+      travelingParticles3d.material.dispose();
+      scene3d.remove(travelingParticles3d);
+      travelingParticles3d = null;
+    }
+
+    // Dispose renderer
+    if (renderer3d) {
+      renderer3d.dispose();
+      renderer3d = null;
+    }
+
+    scene3d = null;
+    camera3d = null;
+  }
+
+  if (window._resize3d) {
+    window.removeEventListener('resize', window._resize3d);
+    window._resize3d = null;
+  }
+
+  selectedNode3d = null;
+  activeNode3d = null;
+}
+
+// --- Layout mode switch ---
+function set3DLayout(mode) {
+  layout3d = mode;
+  document.querySelectorAll('.layout-toggle-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.layout === mode);
+  });
+
+  // If 3D is active, rebuild scene
+  if (viewMode === '3d') {
+    destroy3DScene();
+    init3DScene();
+  }
+}
+
+// --- Discovery Replay Animation ---
+function startDiscoveryReplay() {
+  if (viewMode !== '3d' || !scene3d || meshes3d.length === 0) return;
+
+  const btn = document.getElementById('replay-btn');
+  btn.classList.add('active');
+  btn.textContent = 'Replaying...';
+
+  // Sort nodes by tier: macro -> meso -> micro
+  const tierOrder = { macro: 0, meso: 1, micro: 2 };
+  const sorted = [...meshes3d].sort((a, b) => {
+    const ta = a.userData.node.tier || NODE_TIER[a.userData.node.type] || 'micro';
+    const tb = b.userData.node.tier || NODE_TIER[b.userData.node.type] || 'micro';
+    return (tierOrder[ta] || 2) - (tierOrder[tb] || 2);
+  });
+
+  // Hide all nodes and links
+  sorted.forEach(m => { m.visible = false; m.scale.setScalar(0); });
+  linkLines3d.forEach(l => { l.visible = false; });
+
+  // Reveal nodes one by one
+  const totalDuration = 5000;
+  const interval = totalDuration / sorted.length;
+
+  sorted.forEach((mesh, i) => {
+    setTimeout(() => {
+      mesh.visible = true;
+      // Scale up animation
+      const targetScale = mesh.userData.sizeScale * hud3d.nodeSize;
+      let frame = 0;
+      function scaleUp() {
+        frame++;
+        const t = Math.min(frame / 15, 1);
+        const ease = 1 - Math.pow(1 - t, 3); // easeOutCubic
+        mesh.scale.setScalar(targetScale * ease);
+        if (t < 1) requestAnimationFrame(scaleUp);
+      }
+      scaleUp();
+    }, i * interval);
+  });
+
+  // Reveal edges after all nodes visible
+  setTimeout(() => {
+    linkLines3d.forEach((line, i) => {
+      setTimeout(() => { line.visible = true; }, i * 2);
+    });
+  }, totalDuration + 200);
+
+  // Reset button
+  setTimeout(() => {
+    btn.classList.remove('active');
+    btn.textContent = 'Replay';
+  }, totalDuration + 1500);
+}
 
 </script>
 </body>

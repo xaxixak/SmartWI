@@ -28,9 +28,14 @@ _picker_result = None  # None = idle, "waiting" = dialog open, dict = result rea
 _scan_process = None
 _scan_lock = threading.Lock()
 
-# Import watcher
+# Import watcher and intelligence
 sys.path.insert(0, str(PROJECT_ROOT))
 from incremental.watcher import GraphWatcher
+from intelligence import GraphIntelligence
+
+# Intelligence cache: {graph_path: (mtime, metrics)}
+_intel_cache: dict = {}
+_intel_cache_lock = threading.Lock()
 
 def broadcast_sse(event_type, data):
     """Broadcast an event to all SSE clients."""
@@ -94,6 +99,47 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        # API: Intelligence metrics
+        elif path == "/api/intelligence":
+            graph_path = params.get("path", [None])[0]
+            if not graph_path:
+                graphs = find_graphs()
+                graph_path = graphs[0]["path"] if graphs else None
+
+            if not graph_path or not Path(graph_path).is_file():
+                self.send_error(404, "Graph not found")
+                return
+
+            # Cache by path + mtime
+            try:
+                mtime = Path(graph_path).stat().st_mtime
+                with _intel_cache_lock:
+                    cached = _intel_cache.get(graph_path)
+                    if cached and cached[0] == mtime:
+                        metrics = cached[1]
+                    else:
+                        gi = GraphIntelligence(graph_path)
+                        metrics = gi.all_metrics()
+                        _intel_cache[graph_path] = (mtime, metrics)
+            except Exception as e:
+                result = {"error": str(e)}
+                body = json.dumps(result).encode("utf-8")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            body = json.dumps(metrics).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(body)
 
