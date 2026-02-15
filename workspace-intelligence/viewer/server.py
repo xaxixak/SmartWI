@@ -61,13 +61,9 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         path = parsed.path
         params = parse_qs(parsed.query)
 
-        # Serve graph viewer at /view or /?graph=..., home page at /
-        if path == "/view" or (path == "/" and "graph" in params):
+        # Single page: both / and /view serve the graph viewer
+        if path == "/" or path == "/view":
             self.path = "/index.html"
-            return super().do_GET()
-
-        elif path == "/":
-            self.path = "/home.html"
             return super().do_GET()
 
         # API: List graphs
@@ -132,34 +128,6 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
                 with _sse_lock:
                     if client_queue in _sse_clients:
                         _sse_clients.remove(client_queue)
-
-        # API: Browse directories
-        elif path == "/api/browse":
-            browse_path = params.get("path", [None])[0]
-            if not browse_path:
-                browse_path = str(PROJECT_ROOT)
-            try:
-                p = Path(browse_path)
-                items = []
-                if p.parent != p:
-                    items.append({"name": "..", "path": str(p.parent), "type": "parent"})
-                for entry in sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
-                    if entry.name.startswith("."):
-                        continue
-                    if entry.is_dir():
-                        items.append({"name": entry.name, "path": str(entry), "type": "folder"})
-                result = {"current": str(p), "items": items}
-            except Exception as e:
-                result = {"error": str(e)}
-
-            body = json.dumps(result).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(body)
 
         # API: Start async Windows folder picker
         elif path == "/api/pick-folder":
@@ -286,6 +254,7 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
                                         "nodes_affected": event.nodes_affected,
                                         "nodes_added": event.nodes_added,
                                         "nodes_removed": event.nodes_removed,
+                                        "nodes_stale": getattr(event, 'nodes_stale', 0),
                                         "duration_ms": event.duration_ms,
                                         "graph_path": event.graph_path,
                                     }
@@ -388,6 +357,7 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
                             "nodes_affected": event.nodes_affected,
                             "nodes_added": event.nodes_added,
                             "nodes_removed": event.nodes_removed,
+                            "nodes_stale": getattr(event, 'nodes_stale', 0),
                             "duration_ms": event.duration_ms,
                             "graph_path": event.graph_path,
                         }
