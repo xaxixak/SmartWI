@@ -1033,8 +1033,20 @@ let is3D = false;           // 2D/3D toggle state
 let threeScene, threeCamera, threeRenderer, threeControls;
 let threeNodeMeshes = new Map();  // nodeId -> Mesh
 let threeEdgeLines = [];
+let threeArrowMeshes = [];        // #3 directional arrows
+let threeParticles = [];           // #5 animated runtime particles
 let threeRaycaster, threeMouse;
 let threeAnimId = null;
+let threeCamAnim = null;           // #1 camera fly-to animation state
+let threeHighlightNodes = new Set();  // #2 neighbor highlight
+let threeHighlightLinks = new Set();  // #2 neighbor highlight
+let threeDragNode = null;          // node mesh being dragged
+let threeDragPlane = new THREE.Plane();  // drag projection plane
+let threeDragOffset = new THREE.Vector3();
+let threeDragIntersect = new THREE.Vector3();
+let threeDragMoved = false;        // true if mouse actually moved (skip fly-to)
+let threeDragLastPos = new THREE.Vector3(); // previous drag position for delta
+let threeDragStartScreen = { x: 0, y: 0 }; // screen coords at mousedown
 
 // 3d-force-graph state
 let fg3dInstance = null;
@@ -2301,6 +2313,21 @@ function showRuntimeRipple(nodeIds, runtimeEvent) {
   const flowNodes = getFlowPath(runtimeEvent);
   if (flowNodes.length >= 2) {
     showFlowPath(flowNodes);
+  }
+
+  // #5 Spawn 3D particles on matched edges when in 3D mode
+  if (is3D && threeScene) {
+    const color = runtimeEvent.type === 'http_request'
+      ? (runtimeEvent.status < 400 ? 0x4ecca3 : 0xe94560)
+      : runtimeEvent.type === 'domain_event' ? 0xff6b6b : 0xa29bfe;
+    for (const nid of nodeIds) {
+      // Find edges connected to this node and spawn particles
+      for (const line of threeEdgeLines) {
+        if (line.userData.srcId === nid || line.userData.tgtId === nid) {
+          _spawn3DParticle(line.userData.srcId, line.userData.tgtId, color);
+        }
+      }
+    }
   }
 }
 
@@ -3877,7 +3904,10 @@ function init3D() {
 
   // Event listeners
   canvas.addEventListener('mousemove', on3DMouseMove);
+  canvas.addEventListener('mousedown', on3DMouseDown);
+  canvas.addEventListener('mouseup', on3DMouseUp);
   canvas.addEventListener('click', on3DClick);
+  canvas.addEventListener('contextmenu', on3DRightClick);
 
   // Handle resize
   window.addEventListener('resize', on3DResize);
@@ -3895,6 +3925,13 @@ function on3DResize() {
 }
 
 function on3DMouseMove(event) {
+  // Detect if mouse moved enough during drag to count as a real drag (not click)
+  if (threeDragNode && !threeDragMoved) {
+    const dx = event.clientX - threeDragStartScreen.x;
+    const dy = event.clientY - threeDragStartScreen.y;
+    if (dx * dx + dy * dy > 16) threeDragMoved = true; // >4px threshold
+  }
+
   const canvas = document.getElementById('three-canvas');
   const rect = canvas.getBoundingClientRect();
   threeMouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -3908,17 +3945,64 @@ function on3DMouseMove(event) {
   if (intersects.length > 0) {
     const mesh = intersects[0].object;
     if (threeHoveredNode !== mesh) {
-      // Unhover previous
-      if (threeHoveredNode) threeHoveredNode.material.emissiveIntensity = threeHoveredNode.userData._baseEmissive || 0.1;
+      // Clear previous highlights
+      _clear3DHighlight();
+
       threeHoveredNode = mesh;
-      mesh.material.emissiveIntensity = 0.6;
+      const hoveredId = mesh.userData.nodeId;
+
+      // #2 Find all neighbors via edges
+      threeHighlightNodes.clear();
+      threeHighlightLinks.clear();
+      threeHighlightNodes.add(hoveredId);
+
+      for (const line of threeEdgeLines) {
+        const srcId = line.userData.srcId;
+        const tgtId = line.userData.tgtId;
+        if (srcId === hoveredId || tgtId === hoveredId) {
+          threeHighlightLinks.add(line);
+          threeHighlightNodes.add(srcId);
+          threeHighlightNodes.add(tgtId);
+        }
+      }
+
+      // Highlight hovered node (bright white)
+      mesh.material.emissiveIntensity = 0.8;
+      mesh.material.emissive = new THREE.Color(0xffffff);
+
+      // Highlight neighbors (warm yellow)
+      for (const nid of threeHighlightNodes) {
+        if (nid === hoveredId) continue;
+        const nMesh = threeNodeMeshes.get(nid);
+        if (nMesh) {
+          nMesh.material.emissiveIntensity = 0.6;
+          nMesh.material.emissive = new THREE.Color(0xffdd57);
+        }
+      }
+
+      // Brighten connected edges
+      for (const line of threeHighlightLinks) {
+        line.material = line.userData._hlMaterial ||
+          (line.userData._hlMaterial = new THREE.LineBasicMaterial({
+            color: 0xffdd57, transparent: true, opacity: 0.9, linewidth: 2,
+          }));
+      }
+
+      // Dim unconnected nodes
+      threeNodeMeshes.forEach((m, id) => {
+        if (!threeHighlightNodes.has(id)) {
+          m.material.opacity = 0.15;
+        }
+      });
+
       canvas.style.cursor = 'pointer';
       // Show tooltip
       const d = mesh.userData.nodeData;
       if (d) {
         const tooltipEl = document.getElementById('tooltip');
         const tier = d.tier || NODE_TIER[d.type] || 'micro';
-        tooltipEl.innerHTML = `<div class="tt-name">${d.name}</div><div class="tt-type">${d.type} (${tier})</div>`;
+        const ec = threeHighlightNodes.size - 1;
+        tooltipEl.innerHTML = `<div class="tt-name">${d.name}</div><div class="tt-type">${d.type} (${tier}) &middot; ${ec} connections</div>`;
         tooltipEl.style.display = 'block';
         tooltipEl.style.left = (event.clientX - document.getElementById('graph-container').getBoundingClientRect().left + 12) + 'px';
         tooltipEl.style.top = (event.clientY - document.getElementById('graph-container').getBoundingClientRect().top - 10) + 'px';
@@ -3926,7 +4010,7 @@ function on3DMouseMove(event) {
     }
   } else {
     if (threeHoveredNode) {
-      threeHoveredNode.material.emissiveIntensity = threeHoveredNode.userData._baseEmissive || 0.1;
+      _clear3DHighlight();
       threeHoveredNode = null;
       canvas.style.cursor = 'default';
       document.getElementById('tooltip').style.display = 'none';
@@ -3934,13 +4018,209 @@ function on3DMouseMove(event) {
   }
 }
 
+// #2 Restore all nodes/edges to default appearance
+function _clear3DHighlight() {
+  // Restore node materials
+  threeNodeMeshes.forEach((mesh) => {
+    const colorHex = mesh.userData._baseColor;
+    if (colorHex) mesh.material.emissive = new THREE.Color(colorHex);
+    mesh.material.emissiveIntensity = mesh.userData._baseEmissive || 0.1;
+    mesh.material.opacity = 0.9;
+  });
+  // Restore edge materials
+  for (const line of threeHighlightLinks) {
+    if (line.userData._baseMaterial) {
+      line.material = line.userData._baseMaterial;
+    }
+  }
+  threeHighlightNodes.clear();
+  threeHighlightLinks.clear();
+}
+
 function on3DClick(event) {
+  // Skip fly-to if this click was actually a drag release
+  if (threeDragMoved) { threeDragMoved = false; return; }
+
+  threeRaycaster.setFromCamera(threeMouse, threeCamera);
+  const meshes = Array.from(threeNodeMeshes.values());
+  const intersects = threeRaycaster.intersectObjects(meshes);
+  if (intersects.length > 0) {
+    const mesh = intersects[0].object;
+    const d = mesh.userData.nodeData;
+    if (d) {
+      selectNode(d);
+      // #1 Camera fly-to: only on pure click, not drag
+      const p = mesh.position;
+      const dist = 120;
+      const hyp = Math.hypot(p.x, p.y, p.z) || 1;
+      const ratio = 1 + dist / hyp;
+      _animateCameraTo(
+        { x: p.x * ratio, y: p.y * ratio, z: p.z * ratio },
+        { x: p.x, y: p.y, z: p.z },
+        1200
+      );
+    }
+  }
+}
+
+// #1 Smooth camera animation (lerp position + lookAt over ms)
+function _animateCameraTo(targetPos, lookAtPos, durationMs) {
+  const startPos = threeCamera.position.clone();
+  const startTarget = threeControls.target.clone();
+  const startTime = performance.now();
+  threeCamAnim = { startPos, startTarget, targetPos, lookAtPos, startTime, durationMs };
+}
+
+function _updateCameraAnimation() {
+  if (!threeCamAnim) return;
+  const { startPos, startTarget, targetPos, lookAtPos, startTime, durationMs } = threeCamAnim;
+  const elapsed = performance.now() - startTime;
+  const t = Math.min(elapsed / durationMs, 1);
+  // Ease-out cubic
+  const e = 1 - Math.pow(1 - t, 3);
+
+  threeCamera.position.set(
+    startPos.x + (targetPos.x - startPos.x) * e,
+    startPos.y + (targetPos.y - startPos.y) * e,
+    startPos.z + (targetPos.z - startPos.z) * e
+  );
+  threeControls.target.set(
+    startTarget.x + (lookAtPos.x - startTarget.x) * e,
+    startTarget.y + (lookAtPos.y - startTarget.y) * e,
+    startTarget.z + (lookAtPos.z - startTarget.z) * e
+  );
+  threeControls.update();
+
+  if (t >= 1) threeCamAnim = null;
+}
+
+// #6 Right-click unpin node
+function on3DRightClick(event) {
+  event.preventDefault();
   threeRaycaster.setFromCamera(threeMouse, threeCamera);
   const meshes = Array.from(threeNodeMeshes.values());
   const intersects = threeRaycaster.intersectObjects(meshes);
   if (intersects.length > 0) {
     const d = intersects[0].object.userData.nodeData;
-    if (d) selectNode(d);
+    if (d && simulation) {
+      // Unpin from D3 simulation
+      d.fx = undefined;
+      d.fy = undefined;
+      simulation.alpha(0.3).restart();
+    }
+  }
+}
+
+// 3D Node Dragging — project mouse onto a plane through the node
+function on3DMouseDown(event) {
+  if (event.button !== 0) return; // left-click only
+  threeRaycaster.setFromCamera(threeMouse, threeCamera);
+  const meshes = Array.from(threeNodeMeshes.values());
+  const intersects = threeRaycaster.intersectObjects(meshes);
+  if (intersects.length > 0) {
+    threeDragNode = intersects[0].object;
+    threeDragMoved = false;
+    threeDragStartScreen.x = event.clientX;
+    threeDragStartScreen.y = event.clientY;
+    // Disable orbit controls while dragging a node
+    threeControls.enabled = false;
+    // Create a plane facing the camera, passing through the node
+    const camDir = threeCamera.getWorldDirection(new THREE.Vector3());
+    threeDragPlane.setFromNormalAndCoplanarPoint(camDir, threeDragNode.position);
+    // Compute offset between ray hit point and node center
+    if (threeRaycaster.ray.intersectPlane(threeDragPlane, threeDragIntersect)) {
+      threeDragOffset.copy(threeDragNode.position).sub(threeDragIntersect);
+    }
+    // Store initial position for computing delta (used for child dragging)
+    threeDragLastPos.copy(threeDragNode.position);
+    // In force mode, reheat simulation so other nodes react to drag
+    if (layoutMode === 'force' && simulation) {
+      simulation.alphaTarget(0.3).restart();
+    }
+  }
+}
+
+function on3DMouseUp(event) {
+  if (!threeDragNode) return;
+  if (threeDragMoved) {
+    const d = threeDragNode.userData.nodeData;
+    if (layoutMode === 'force' && simulation) {
+      // Pin node in D3 simulation, let simulation cool down
+      if (d) {
+        d.fx = threeDragNode.position.x + 400;
+        d.fy = threeDragNode.position.z + 300;
+      }
+      simulation.alphaTarget(0);
+    }
+  }
+  threeDragNode = null;
+  threeControls.enabled = true;
+}
+
+// Collect all descendant node IDs (children, grandchildren, etc.)
+function _get3DDescendants(nodeId) {
+  const ids = new Set();
+  const stack = [nodeId];
+  while (stack.length > 0) {
+    const nid = stack.pop();
+    const kids = hierarchyChildren.get(nid) || [];
+    for (const kid of kids) {
+      if (!ids.has(kid)) {
+        ids.add(kid);
+        stack.push(kid);
+      }
+    }
+  }
+  return ids;
+}
+
+function _updateThreeDrag() {
+  if (!threeDragNode) return;
+  threeRaycaster.setFromCamera(threeMouse, threeCamera);
+  if (threeRaycaster.ray.intersectPlane(threeDragPlane, threeDragIntersect)) {
+    const newPos = threeDragIntersect.add(threeDragOffset);
+    // Don't move anything until mouse has moved >4px from start (click vs drag)
+    if (!threeDragMoved) return;
+
+    // Compute delta from last frame
+    const dx = newPos.x - threeDragLastPos.x;
+    const dy = newPos.y - threeDragLastPos.y;
+    const dz = newPos.z - threeDragLastPos.z;
+
+    // Move the dragged node
+    threeDragNode.position.copy(newPos);
+    if (threeDragNode.userData._basePos) {
+      threeDragNode.userData._basePos.copy(newPos);
+    }
+
+    // Force mode: feed back to D3 simulation so physics react
+    if (layoutMode === 'force' && simulation) {
+      const d = threeDragNode.userData.nodeData;
+      if (d) {
+        d.fx = newPos.x + 400;   // Three.js X → D3 x
+        d.fy = newPos.z + 300;   // Three.js Z → D3 y
+      }
+    }
+
+    // Non-force modes (tree/radial/sphere): drag children along
+    if (layoutMode !== 'force' && (dx !== 0 || dy !== 0 || dz !== 0)) {
+      const dragId = threeDragNode.userData.nodeId;
+      const descendants = _get3DDescendants(dragId);
+      for (const childId of descendants) {
+        const childMesh = threeNodeMeshes.get(childId);
+        if (!childMesh) continue;
+        childMesh.position.x += dx;
+        childMesh.position.y += dy;
+        childMesh.position.z += dz;
+        if (childMesh.userData._basePos) {
+          childMesh.userData._basePos.x += dx;
+          childMesh.userData._basePos.y += dy;
+          childMesh.userData._basePos.z += dz;
+        }
+      }
+    }
+
+    threeDragLastPos.copy(newPos);
   }
 }
 
@@ -3952,6 +4232,10 @@ function build3DGraph() {
   threeNodeMeshes.clear();
   threeEdgeLines.forEach(line => threeScene.remove(line));
   threeEdgeLines = [];
+  threeArrowMeshes.forEach(a => threeScene.remove(a));
+  threeArrowMeshes = [];
+  threeParticles.forEach(p => { threeScene.remove(p); p.geometry.dispose(); p.material.dispose(); });
+  threeParticles = [];
 
   const { nodes, edges } = getFilteredData();
   const edgeCounts = computeEdgeCounts(nodes, edges);
@@ -3996,6 +4280,7 @@ function build3DGraph() {
     mesh.userData.nodeData = d;
     mesh.userData.nodeId = d.id;
     mesh.userData._baseEmissive = material.emissiveIntensity;
+    mesh.userData._baseColor = colorHex;  // #2 for highlight restore
 
     threeScene.add(mesh);
     threeNodeMeshes.set(d.id, mesh);
@@ -4029,15 +4314,39 @@ function build3DGraph() {
     const line = new THREE.Line(geometry, lineMaterial[group]);
     line.userData.srcId = srcId;
     line.userData.tgtId = tgtId;
+    line.userData.edgeType = e.type;              // #3 for arrows
+    line.userData._baseMaterial = lineMaterial[group]; // #2 for highlight restore
     threeScene.add(line);
     threeEdgeLines.push(line);
+  }
+
+  // #3 Create directional arrow cones at edge targets
+  threeArrowMeshes.forEach(a => threeScene.remove(a));
+  threeArrowMeshes = [];
+  const arrowGeo = new THREE.ConeGeometry(2.5, 8, 6);
+  arrowGeo.translate(0, -4, 0); // pivot at tip
+  for (const line of threeEdgeLines) {
+    const group = EDGE_TYPE_TO_GROUP[line.userData.edgeType] || 'structural';
+    const colorHex = EDGE_GROUP_COLORS[group] || '#888';
+    const arrowMat = new THREE.MeshPhongMaterial({
+      color: new THREE.Color(colorHex),
+      emissive: new THREE.Color(colorHex),
+      emissiveIntensity: 0.3,
+      transparent: true,
+      opacity: 0.7,
+    });
+    const arrow = new THREE.Mesh(arrowGeo, arrowMat);
+    arrow.userData.srcId = line.userData.srcId;
+    arrow.userData.tgtId = line.userData.tgtId;
+    threeScene.add(arrow);
+    threeArrowMeshes.push(arrow);
   }
 
   // Apply current layout mode in 3D
   apply3DLayout(nodes);
   _storeBasePositions();
 
-  // Update edge positions
+  // Update edge positions + arrows
   update3DEdgePositions();
 
   // Fit camera to content
@@ -4388,6 +4697,25 @@ function update3DEdgePositions() {
     positions.setXYZ(1, tgtMesh.position.x, tgtMesh.position.y, tgtMesh.position.z);
     positions.needsUpdate = true;
   }
+
+  // #3 Position arrow cones near target end, pointing along edge direction
+  for (const arrow of threeArrowMeshes) {
+    const srcMesh = threeNodeMeshes.get(arrow.userData.srcId);
+    const tgtMesh = threeNodeMeshes.get(arrow.userData.tgtId);
+    if (!srcMesh || !tgtMesh) continue;
+
+    const src = srcMesh.position;
+    const tgt = tgtMesh.position;
+    // Direction from source to target
+    const dx = tgt.x - src.x, dy = tgt.y - src.y, dz = tgt.z - src.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+    // Place arrow 90% along the edge (near target, outside its sphere)
+    const t = Math.max(0, 1 - 12 / len);  // offset ~12 units from target
+    arrow.position.set(src.x + dx * t, src.y + dy * t, src.z + dz * t);
+    // Orient cone to point along edge direction
+    arrow.lookAt(tgt.x, tgt.y, tgt.z);
+    arrow.rotateX(Math.PI / 2);  // ConeGeometry points up by default
+  }
 }
 
 function fit3DCamera(nodes) {
@@ -4451,6 +4779,8 @@ const BREATHING_SPEED = 0.3;       // how fast they drift
 function animate3D() {
   if (!is3D) return;
   threeAnimId = requestAnimationFrame(animate3D);
+  _updateCameraAnimation();  // #1 camera fly-to
+  _updateThreeDrag();        // node dragging
   threeControls.update();
   _3dTime += 1 / 60;
 
@@ -4460,6 +4790,8 @@ function animate3D() {
     for (const d of nodes) {
       const mesh = threeNodeMeshes.get(d.id);
       if (!mesh) continue;
+      // Skip dragged node — we control its position directly
+      if (threeDragNode === mesh) continue;
       const depth = nodeDepthMap.get(d.id) ?? 4;
       const bx = (d.x || 0) - 400;
       const bz = (d.y || 0) - 300;
@@ -4473,6 +4805,9 @@ function animate3D() {
   let idx = 0;
   let edgesNeedUpdate = false;
   threeNodeMeshes.forEach((mesh, id) => {
+    // Skip dragged node — mouse controls it directly, no breathing
+    if (threeDragNode === mesh) { idx++; edgesNeedUpdate = true; return; }
+
     const base = mesh.userData._basePos;
     if (base) {
       const t = _3dTime * BREATHING_SPEED;
@@ -4503,7 +4838,64 @@ function animate3D() {
 
   if (edgesNeedUpdate) update3DEdgePositions();
 
+  // #5 Animate runtime particles
+  _updateRuntimeParticles();
+
   threeRenderer.render(threeScene, threeCamera);
+}
+
+// #5 Spawn a glowing particle that travels along an edge (source → target)
+function _spawn3DParticle(srcId, tgtId, color) {
+  if (!threeScene) return;
+  const geo = new THREE.SphereGeometry(2.5, 8, 6);
+  const mat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 1.0,
+  });
+  const particle = new THREE.Mesh(geo, mat);
+  particle.userData._srcId = srcId;
+  particle.userData._tgtId = tgtId;
+  particle.userData._progress = 0;       // 0 → 1 along edge
+  particle.userData._speed = 0.012 + Math.random() * 0.008;  // vary speed
+  particle.userData._born = _3dTime;
+  threeScene.add(particle);
+  threeParticles.push(particle);
+}
+
+// #5 Update all active runtime particles each frame
+function _updateRuntimeParticles() {
+  for (let i = threeParticles.length - 1; i >= 0; i--) {
+    const p = threeParticles[i];
+    p.userData._progress += p.userData._speed;
+
+    const srcMesh = threeNodeMeshes.get(p.userData._srcId);
+    const tgtMesh = threeNodeMeshes.get(p.userData._tgtId);
+
+    if (!srcMesh || !tgtMesh || p.userData._progress > 1) {
+      // Remove finished particle
+      threeScene.remove(p);
+      p.geometry.dispose();
+      p.material.dispose();
+      threeParticles.splice(i, 1);
+      continue;
+    }
+
+    const t = p.userData._progress;
+    const src = srcMesh.position;
+    const tgt = tgtMesh.position;
+    p.position.set(
+      src.x + (tgt.x - src.x) * t,
+      src.y + (tgt.y - src.y) * t,
+      src.z + (tgt.z - src.z) * t
+    );
+
+    // Fade out in last 20%
+    p.material.opacity = t > 0.8 ? (1 - t) / 0.2 : 1.0;
+    // Pulse scale
+    const pulse = 1 + Math.sin(t * Math.PI * 4) * 0.3;
+    p.scale.setScalar(pulse);
+  }
 }
 
 function toggle3D() {
