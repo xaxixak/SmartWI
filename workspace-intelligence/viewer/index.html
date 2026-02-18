@@ -4086,9 +4086,9 @@ function apply3DSphereLayout(nodes) {
   const { children, nodeSet, roots, subtreeW } = _build3DHierarchy(nodes);
 
   const MACRO_DEPTH = 1;      // depth 0-1 = shell-based branching
-  const SHELL_RADII = [0, 120, 200];  // shell radius per macro depth
-  const MESO_RING_R = 60;     // ring radius for meso (depth 2)
-  const MICRO_ORBIT = [0, 0, 0, 35, 25, 20, 15];  // local sphere radius per depth
+  const SHELL_RADII = [0, 200, 350];  // shell radius per macro depth (wider spread)
+  const MESO_BASE_R = 80;     // base ring radius for meso (scales with child count)
+  const MICRO_ORBIT = [0, 0, 0, 55, 40, 30, 22];  // local sphere radius per depth
   const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
   const positioned = new Set();
 
@@ -4163,6 +4163,9 @@ function apply3DSphereLayout(nodes) {
     dir.normalize();
     const { u, v } = _perpBasis(dir);
 
+    // Scale ring radius: more kids = wider ring so they don't overlap
+    const ringR = MESO_BASE_R + kids.length * 8;
+
     for (let i = 0; i < kids.length; i++) {
       const cid = kids[i];
       const mesh = threeNodeMeshes.get(cid);
@@ -4170,9 +4173,9 @@ function apply3DSphereLayout(nodes) {
 
       const angle = (i / kids.length) * Math.PI * 2;
       mesh.position.set(
-        px + MESO_RING_R * (u.x * Math.cos(angle) + v.x * Math.sin(angle)),
-        py + MESO_RING_R * (u.y * Math.cos(angle) + v.y * Math.sin(angle)),
-        pz + MESO_RING_R * (u.z * Math.cos(angle) + v.z * Math.sin(angle))
+        px + ringR * (u.x * Math.cos(angle) + v.x * Math.sin(angle)),
+        py + ringR * (u.y * Math.cos(angle) + v.y * Math.sin(angle)),
+        pz + ringR * (u.z * Math.cos(angle) + v.z * Math.sin(angle))
       );
       positioned.add(cid);
 
@@ -4286,9 +4289,9 @@ function apply3DSphereLayout(nodes) {
     const ct = 1 - (2 * orphanIdx + 1) / Math.max(20, nodes.length);
     const sinT = Math.sqrt(Math.max(0, 1 - ct * ct));
     if (nearMesh) {
-      mesh.position.set(nearMesh.position.x + 25 * sinT * Math.cos(phi), nearMesh.position.y + 25 * ct, nearMesh.position.z + 25 * sinT * Math.sin(phi));
+      mesh.position.set(nearMesh.position.x + 40 * sinT * Math.cos(phi), nearMesh.position.y + 40 * ct, nearMesh.position.z + 40 * sinT * Math.sin(phi));
     } else {
-      mesh.position.set(300 * sinT * Math.cos(phi), 300 * ct, 300 * sinT * Math.sin(phi));
+      mesh.position.set(450 * sinT * Math.cos(phi), 450 * ct, 450 * sinT * Math.sin(phi));
     }
     positioned.add(d.id);
     orphanIdx++;
