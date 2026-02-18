@@ -14,7 +14,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg-primary:   #1a1a2e;
+  --bg-primary:   #000000;
   --bg-secondary: #16213e;
   --bg-panel:     #0f3460;
   --text-primary: #e0e0e0;
@@ -3631,8 +3631,8 @@ function init3D() {
 
   // Scene
   threeScene = new THREE.Scene();
-  threeScene.background = new THREE.Color(0x12122a);
-  threeScene.fog = new THREE.FogExp2(0x12122a, 0.0006);
+  threeScene.background = new THREE.Color(0x000000);
+  threeScene.fog = new THREE.FogExp2(0x000000, 0.0006);
 
   // Camera
   threeCamera = new THREE.PerspectiveCamera(60, w / h, 1, 8000);
