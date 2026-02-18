@@ -658,21 +658,22 @@ body {
 
       <!-- Layout Mode -->
       <div style="display:flex;gap:4px;align-items:center;">
-        <button class="layer-btn layout-btn active" id="btn-layout-force" onclick="setLayoutMode('force')" title="Force-directed physics layout">Force</button>
-        <button class="layer-btn layout-btn" id="btn-layout-tree" onclick="setLayoutMode('tree')" title="Top-down tree hierarchy layout">Tree</button>
-        <button class="layer-btn layout-btn" id="btn-layout-radial" onclick="setLayoutMode('radial')" title="Radial rings from root">Radial</button>
-        <button class="layer-btn layout-btn" id="btn-layout-sphere" onclick="setLayoutMode('sphere')" title="Sphere layout - depth from center outward">Sphere</button>
-        <span style="color:var(--border);margin:0 2px;">|</span>
+        <select id="layout-select" onchange="setLayoutMode(this.value)" style="padding:4px 8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:12px;cursor:pointer;">
+          <option value="force">Force</option>
+          <option value="tree">Tree</option>
+          <option value="radial">Radial</option>
+          <option value="sphere">Sphere</option>
+        </select>
         <button class="layer-btn" id="btn-3d-toggle" onclick="toggle3D()" title="Switch between 2D and 3D view" style="font-weight:700;">3D</button>
       </div>
 
-      <!-- View Mode Buttons -->
-      <div class="layer-toggle" style="display:flex;gap:4px;">
-        <button class="layer-btn active" data-layer="all" onclick="setViewLayer('all')" title="Show all nodes and edges">All</button>
-        <button class="layer-btn" data-layer="structure" onclick="setViewLayer('structure')" title="Show only folders, files, and CONTAINS edges">Structure</button>
-        <button class="layer-btn" data-layer="dependency" onclick="setViewLayer('dependency')" title="Show files, functions, and IMPORTS/CALLS edges">Dependency</button>
-        <button class="layer-btn" data-layer="runtime" onclick="setViewLayer('runtime')" title="Show runtime execution paths and events">Runtime</button>
-      </div>
+      <!-- View Layer -->
+      <select id="layer-select" onchange="setViewLayer(this.value)" style="padding:4px 8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:12px;cursor:pointer;">
+        <option value="all">All</option>
+        <option value="structure">Structure</option>
+        <option value="dependency">Dependency</option>
+        <option value="runtime">Runtime</option>
+      </select>
 
       <!-- Help Button -->
       <button onclick="toggleModeHelp()" style="background:transparent; border:1px solid var(--border); border-radius:4px; padding:4px 8px; color:var(--text-muted); cursor:pointer; font-size:14px;" title="Show mode explanations">?</button>
@@ -3287,10 +3288,9 @@ function applySphereLayout(nodes) {
 function setLayoutMode(mode) {
   layoutMode = mode;
 
-  // Update button active states
-  document.querySelectorAll('.layout-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.id === `btn-layout-${mode}`);
-  });
+  // Sync dropdown
+  const layoutSel = document.getElementById('layout-select');
+  if (layoutSel) layoutSel.value = mode;
 
   const { nodes } = getFilteredData();
 
@@ -3335,10 +3335,9 @@ function setViewLayer(layer) {
     cb.checked = filters.edgeGroup[cb.dataset.value];
   });
 
-  // Update button styles
-  document.querySelectorAll('.layer-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.layer === layer);
-  });
+  // Sync dropdown
+  const layerSel = document.getElementById('layer-select');
+  if (layerSel) layerSel.value = layer;
 
   updateGraph();
   updateStats();
