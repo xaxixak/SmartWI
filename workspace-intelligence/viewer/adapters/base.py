@@ -5,14 +5,15 @@ from typing import List
 
 class GraphSource:
     """Describes an available data source."""
-    __slots__ = ("id", "name", "adapter", "description", "config")
+    __slots__ = ("id", "name", "adapter", "description", "group", "config")
 
     def __init__(self, id: str, name: str, adapter: str,
-                 description: str = "", config: dict = None):
+                 description: str = "", group: str = "", config: dict = None):
         self.id = id
         self.name = name
         self.adapter = adapter
         self.description = description
+        self.group = group      # for <optgroup> in viewer dropdown
         self.config = config or {}
 
     def to_dict(self):
@@ -21,6 +22,7 @@ class GraphSource:
             "name": self.name,
             "adapter": self.adapter,
             "description": self.description,
+            "group": self.group,
         }
 
 

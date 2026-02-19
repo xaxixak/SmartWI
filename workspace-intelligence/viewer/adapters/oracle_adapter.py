@@ -32,11 +32,16 @@ ORACLE_EDGE_GROUPS = {
 
 
 def _oracle_available() -> bool:
-    """Check if Oracle v2 server is reachable."""
+    """Check if Oracle v2 server is reachable by trying the graph endpoint."""
     try:
-        req = urllib.request.Request(f"{ORACLE_API}/api/health", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        # Oracle v2 may not have /api/health — use /api/graph with tiny limit
+        url = f"{ORACLE_API}/api/graph?mode=hybrid&limit=1"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
             return resp.status == 200
+    except urllib.error.HTTPError as e:
+        # Server responded (even with error) = it's running
+        return e.code < 500
     except Exception:
         return False
 
@@ -50,6 +55,7 @@ class OracleAdapter(BaseAdapter):
             name="Oracle v2 Knowledge",
             adapter="oracle",
             description="Knowledge graph (principles, patterns, learnings)",
+            group="Knowledge Graphs",
         )]
 
     def load_graph(self, source_id: str) -> UniversalGraph:

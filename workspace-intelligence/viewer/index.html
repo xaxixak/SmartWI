@@ -641,10 +641,11 @@ body {
   <div id="toolbar">
     <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">&#9776;</button>
     <button onclick="showScanDialog()" style="color:var(--accent);background:transparent;border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer;font-size:13px;">Scan Folder</button>
-    <select id="source-selector" onchange="switchSource(this.value)" style="padding:4px 8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:13px;max-width:180px;cursor:pointer;" title="Data source">
+    <select id="source-selector" onchange="switchSource(this.value)" style="padding:4px 8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:13px;max-width:240px;cursor:pointer;" title="Data source">
       <option value="">-- Source --</option>
     </select>
-    <select id="graph-selector" onchange="switchGraph(this.value)" style="padding:4px 8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:13px;max-width:220px;cursor:pointer;">
+    <!-- graph-selector kept hidden in DOM for watch/scan integration -->
+    <select id="graph-selector" onchange="switchGraph(this.value)" style="display:none;">
       <option value="">-- Select Graph --</option>
     </select>
     <input type="text" id="search-box" placeholder="Search nodes by name..." />
@@ -1185,7 +1186,8 @@ async function loadData(graphPathOverride) {
   // Initialize filters with all observed types checked
   const nodeTypes = new Set(rawData.nodes.map(n => n.type));
   for (const t of nodeTypes) filters.nodeType[t] = true;
-  for (const g of Object.keys(EDGE_GROUPS)) filters.edgeGroup[g] = true;
+  // Always restore WI edge groups when loading via loadData (clears any non-WI groups)
+  rebuildEdgeGroups(EDGE_GROUPS);
 
   // For large graphs, start with micro tier hidden for better performance
   if (rawData.nodes.length > 200) {
@@ -1199,10 +1201,23 @@ async function loadData(graphPathOverride) {
   updateStats();
   checkNodeLimit();
 
-  // Sync dropdown selection
+  // Sync graph-selector (hidden, for backward compat)
   const sel = document.getElementById('graph-selector');
   if (sel && currentGraphPath) {
     sel.value = currentGraphPath;
+  }
+  // Sync source-selector to show the WI graph that was loaded
+  if (currentGraphPath) {
+    const stem = currentGraphPath.split(/[\\/]/).pop().replace('.json', '');
+    const srcSel = document.getElementById('source-selector');
+    if (srcSel) {
+      const wiId = `wi:${stem}`;
+      // Only update if the option exists (avoids resetting Oracle/CSV selection)
+      if ([...srcSel.options].some(o => o.value === wiId)) {
+        srcSel.value = wiId;
+        currentSourceId = wiId;
+      }
+    }
   }
 
   // Check if watch mode was active
@@ -3844,12 +3859,26 @@ async function loadSourceList() {
     const sources = await resp.json();
     const sel = document.getElementById('source-selector');
     sel.innerHTML = '<option value="">-- Source --</option>';
+
+    // Group sources using <optgroup>
+    const groups = {};
     for (const s of sources) {
-      const opt = document.createElement('option');
-      opt.value = s.id;
-      opt.textContent = `${s.name} [${s.adapter}]`;
-      sel.appendChild(opt);
+      const g = s.group || s.adapter;
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(s);
     }
+    for (const [groupName, items] of Object.entries(groups)) {
+      const grp = document.createElement('optgroup');
+      grp.label = groupName;
+      for (const s of items) {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.name + (s.description ? `  (${s.description})` : '');
+        grp.appendChild(opt);
+      }
+      sel.appendChild(grp);
+    }
+
     if (currentSourceId) sel.value = currentSourceId;
   } catch (e) {
     console.error('Failed to load source list:', e);
@@ -3859,25 +3888,13 @@ async function loadSourceList() {
 async function switchSource(sourceId) {
   if (!sourceId) return;
   const emptyState = document.getElementById('empty-state');
-
-  // "wi" = WI Code Graphs — just keep Select Graph visible, nothing else to load
-  if (sourceId === 'wi') {
-    currentSourceId = 'wi';
-    document.getElementById('graph-selector').style.display = '';
-    document.getElementById('graph-selector').focus();
-    return;
-  }
-
   try {
     const resp = await fetch(`/api/graph-source?id=${encodeURIComponent(sourceId)}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
 
     currentSourceId = sourceId;
-
-    // Hide Select Graph when using non-WI source
     await stopWatcher();
-    document.getElementById('graph-selector').style.display = 'none';
 
     rawData = { nodes: data.nodes, edges: data.edges };
 

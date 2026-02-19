@@ -20,6 +20,7 @@ class JSONAdapter(BaseAdapter):
                 name=f.stem,
                 adapter="json",
                 description=f"JSON import ({size_kb} KB)",
+                group="Imports",
                 config={"path": str(f)},
             ))
         return sources

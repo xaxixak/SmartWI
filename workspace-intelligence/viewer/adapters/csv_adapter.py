@@ -20,6 +20,7 @@ class CSVAdapter(BaseAdapter):
                 name=f.stem,
                 adapter="csv",
                 description=f"CSV import ({size_kb} KB)",
+                group="Imports",
                 config={"path": str(f)},
             ))
         return sources
