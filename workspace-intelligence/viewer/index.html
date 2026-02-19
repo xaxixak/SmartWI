@@ -3859,6 +3859,15 @@ async function loadSourceList() {
 async function switchSource(sourceId) {
   if (!sourceId) return;
   const emptyState = document.getElementById('empty-state');
+
+  // "wi" = WI Code Graphs — just keep Select Graph visible, nothing else to load
+  if (sourceId === 'wi') {
+    currentSourceId = 'wi';
+    document.getElementById('graph-selector').style.display = '';
+    document.getElementById('graph-selector').focus();
+    return;
+  }
+
   try {
     const resp = await fetch(`/api/graph-source?id=${encodeURIComponent(sourceId)}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -3866,13 +3875,9 @@ async function switchSource(sourceId) {
 
     currentSourceId = sourceId;
 
-    // Stop watcher if switching away from WI
-    if (!sourceId.startsWith('wi:')) {
-      await stopWatcher();
-      document.getElementById('graph-selector').style.display = 'none';
-    } else {
-      document.getElementById('graph-selector').style.display = '';
-    }
+    // Hide Select Graph when using non-WI source
+    await stopWatcher();
+    document.getElementById('graph-selector').style.display = 'none';
 
     rawData = { nodes: data.nodes, edges: data.edges };
 

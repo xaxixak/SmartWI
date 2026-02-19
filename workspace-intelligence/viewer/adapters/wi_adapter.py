@@ -20,30 +20,52 @@ WI_EDGE_GROUPS = {
 }
 
 
+def list_wi_files():
+    """Return {stem: path} for all WI graph JSON files."""
+    if not GRAPHS_DIR.exists():
+        return {}
+    return {f.stem: str(f) for f in sorted(GRAPHS_DIR.glob("*.json"))}
+
+
 class WIAdapter(BaseAdapter):
     def list_sources(self) -> List[GraphSource]:
-        sources = []
-        if not GRAPHS_DIR.exists():
-            return sources
-        for f in sorted(GRAPHS_DIR.glob("*.json")):
-            size_kb = f.stat().st_size // 1024
-            sources.append(GraphSource(
-                id=f"wi:{f.stem}",
-                name=f.stem,
-                adapter="wi",
-                description=f"Code graph ({size_kb} KB)",
-                config={"path": str(f)},
-            ))
-        return sources
+        """Expose ONE source entry for WI code graphs (not one per file).
+        Individual file selection stays in the viewer's existing Select Graph dropdown."""
+        files = list_wi_files()
+        if not files:
+            return []
+        count = len(files)
+        return [GraphSource(
+            id="wi",
+            name="WI Code Graphs",
+            adapter="wi",
+            description=f"{count} scanned project{'s' if count != 1 else ''} — use Select Graph to pick",
+        )]
 
     def load_graph(self, source_id: str) -> UniversalGraph:
-        # Find the matching source
-        for src in self.list_sources():
-            if src.id == source_id:
-                graph_path = src.config["path"]
-                break
+        if source_id != "wi":
+            # Also support legacy wi:<stem> IDs for backward compat
+            if source_id.startswith("wi:"):
+                stem = source_id[3:]
+                files = list_wi_files()
+                graph_path = files.get(stem)
+                if not graph_path:
+                    raise ValueError(f"WI graph not found: {stem}")
+            else:
+                raise ValueError(f"Unknown WI source: {source_id}")
         else:
-            raise ValueError(f"Unknown WI source: {source_id}")
+            # "wi" with no file = load first available
+            files = list_wi_files()
+            if not files:
+                raise ValueError("No WI graphs available")
+            graph_path = next(iter(files.values()))
+
+        src = GraphSource(
+            id=source_id,
+            name=Path(graph_path).stem,
+            adapter="wi",
+            description=f"Code graph ({Path(graph_path).stat().st_size // 1024} KB)",
+        )
 
         with open(graph_path, "r", encoding="utf-8") as f:
             data = json.load(f)
