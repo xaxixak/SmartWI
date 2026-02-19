@@ -641,6 +641,9 @@ body {
   <div id="toolbar">
     <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">&#9776;</button>
     <button onclick="showScanDialog()" style="color:var(--accent);background:transparent;border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer;font-size:13px;">Scan Folder</button>
+    <select id="source-selector" onchange="switchSource(this.value)" style="padding:4px 8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:13px;max-width:180px;cursor:pointer;" title="Data source">
+      <option value="">-- Source --</option>
+    </select>
     <select id="graph-selector" onchange="switchGraph(this.value)" style="padding:4px 8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:13px;max-width:220px;cursor:pointer;">
       <option value="">-- Select Graph --</option>
     </select>
@@ -3821,6 +3824,133 @@ async function switchGraph(path) {
 }
 
 // -----------------------------------------------------------------------
+// Universal Data Source (Phase H0)
+// -----------------------------------------------------------------------
+let currentSourceId = null;
+
+// Oracle type colors and tiers (merged when Oracle source loaded)
+const SOURCE_TYPE_COLORS = {
+  principle: '#FFD700', pattern: '#4A90D9', learning: '#50C878',
+  retro: '#9B59B6', log: '#888888', node: '#607D8B',
+};
+const SOURCE_TYPE_TIERS = {
+  principle: 'macro', pattern: 'meso', learning: 'micro',
+  retro: 'meso', log: 'micro', node: 'meso',
+};
+
+async function loadSourceList() {
+  try {
+    const resp = await fetch('/api/graph-sources');
+    const sources = await resp.json();
+    const sel = document.getElementById('source-selector');
+    sel.innerHTML = '<option value="">-- Source --</option>';
+    for (const s of sources) {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = `${s.name} [${s.adapter}]`;
+      sel.appendChild(opt);
+    }
+    if (currentSourceId) sel.value = currentSourceId;
+  } catch (e) {
+    console.error('Failed to load source list:', e);
+  }
+}
+
+async function switchSource(sourceId) {
+  if (!sourceId) return;
+  const emptyState = document.getElementById('empty-state');
+  try {
+    const resp = await fetch(`/api/graph-source?id=${encodeURIComponent(sourceId)}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+
+    currentSourceId = sourceId;
+
+    // Stop watcher if switching away from WI
+    if (!sourceId.startsWith('wi:')) {
+      await stopWatcher();
+      document.getElementById('graph-selector').style.display = 'none';
+    } else {
+      document.getElementById('graph-selector').style.display = '';
+    }
+
+    rawData = { nodes: data.nodes, edges: data.edges };
+
+    // Apply source-specific type colors and tiers
+    const caps = data.capabilities || {};
+    const extraColors = caps.type_colors || {};
+    const extraTiers = caps.type_tiers || {};
+    Object.assign(TYPE_COLORS, SOURCE_TYPE_COLORS, extraColors);
+    Object.assign(NODE_TIER, SOURCE_TYPE_TIERS, extraTiers);
+
+    // Rebuild edge groups from capabilities
+    if (caps.edge_groups) {
+      rebuildEdgeGroups(caps.edge_groups);
+    }
+
+    // Normalize tiers
+    for (const node of rawData.nodes) {
+      if (!node.tier) node.tier = NODE_TIER[node.type] || 'meso';
+    }
+
+    if (emptyState) emptyState.style.display = 'none';
+
+    // Reset state
+    focalNodeId = null;
+    focalNodeSet = null;
+    filters.nodeType = {};
+    filters.tier = { macro: true, meso: true, micro: true };
+
+    computeNodeDepths();
+
+    const nodeTypes = new Set(rawData.nodes.map(n => n.type));
+    for (const t of nodeTypes) filters.nodeType[t] = true;
+    for (const g of Object.keys(filters.edgeGroup)) filters.edgeGroup[g] = true;
+
+    if (rawData.nodes.length > 200) {
+      filters.tier.micro = false;
+    }
+
+    buildFilterUI();
+    buildTreeView();
+    initGraph();
+    updateGraph();
+    updateStats();
+    checkNodeLimit();
+
+    // Update URL
+    const url = new URL(window.location);
+    url.searchParams.set('source', sourceId);
+    url.searchParams.delete('graph');
+    window.history.replaceState({}, '', url);
+
+    console.log(`Loaded source: ${sourceId} (${rawData.nodes.length} nodes, ${rawData.edges.length} edges)`, caps);
+  } catch (err) {
+    console.error('Failed to load source:', err);
+    rawData = { nodes: [], edges: [] };
+    document.getElementById('stats-display').textContent = 'Error loading source';
+    if (emptyState) emptyState.style.display = 'block';
+  }
+}
+
+function rebuildEdgeGroups(newGroups) {
+  // Clear EDGE_TYPE_TO_GROUP
+  for (const key of Object.keys(EDGE_TYPE_TO_GROUP)) {
+    delete EDGE_TYPE_TO_GROUP[key];
+  }
+  // Rebuild from new groups
+  filters.edgeGroup = {};
+  for (const [group, types] of Object.entries(newGroups)) {
+    for (const t of types) EDGE_TYPE_TO_GROUP[t] = group;
+    filters.edgeGroup[group] = true;
+    // Add color if missing
+    if (!EDGE_GROUP_COLORS[group]) {
+      EDGE_GROUP_COLORS[group] = '#607D8B';
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
 // Scan Dialog
 // -----------------------------------------------------------------------
 function showScanDialog() {
@@ -5188,6 +5318,7 @@ function toggle3D() {
 // -----------------------------------------------------------------------
 // Boot
 // -----------------------------------------------------------------------
+loadSourceList();
 loadGraphList();
 loadData();
 initLiveUpdates();

@@ -30,8 +30,10 @@ _scan_lock = threading.Lock()
 
 # Import watcher and intelligence
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(VIEWER_DIR))  # so `from adapters import` works
 from incremental.watcher import GraphWatcher
 from intelligence import GraphIntelligence
+from adapters import list_all_sources, load_graph as adapter_load_graph
 
 # Intelligence cache: {graph_path: (mtime, metrics)}
 _intel_cache: dict = {}
@@ -224,6 +226,43 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
 
             body = json.dumps(result).encode("utf-8")
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        # API: List all graph sources (universal adapter)
+        elif path == "/api/graph-sources":
+            try:
+                sources = [s.to_dict() for s in list_all_sources()]
+            except Exception as e:
+                sources = []
+                print(f"[WARN] graph-sources error: {e}")
+            body = json.dumps(sources).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        # API: Load graph from universal adapter
+        elif path == "/api/graph-source":
+            source_id = params.get("id", [None])[0]
+            if not source_id:
+                self.send_error(400, "Missing ?id= parameter")
+                return
+            try:
+                graph = adapter_load_graph(source_id)
+                body = json.dumps(graph.to_dict()).encode("utf-8")
+                self.send_response(200)
+            except ValueError as e:
+                body = json.dumps({"error": str(e)}).encode("utf-8")
+                self.send_response(404)
+            except Exception as e:
+                body = json.dumps({"error": str(e)}).encode("utf-8")
+                self.send_response(500)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Access-Control-Allow-Origin", "*")
