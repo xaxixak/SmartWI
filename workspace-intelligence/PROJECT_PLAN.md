@@ -1,7 +1,7 @@
 # Workspace Intelligence - Project Plan
 
 > Single source of truth for project status, architecture, and roadmap.
-> Last updated: 2026-02-11 (All phases complete)
+> Last updated: 2026-02-19
 
 ## What This Is
 
@@ -30,9 +30,17 @@ Not just "what files exist" but "what does this code DO, what does it connect to
 - `pass3_llm.py` — ✓ LLM semantic analysis (Anthropic API, tool_use, prompt caching)
 - `pass4_validation.py` — ✓ Validation & confidence scoring (orphan detection, edge constraints)
 
-### Viewer (Fully Featured — Phases B+C Done)
+### Viewer (Fully Featured — Phases B+F+G Done)
 - `viewer/server.py` — HTTP server with SSE, live updates, scan API, subgraph API, expansion scan
-- `viewer/index.html` — D3.js force graph with tree view, focal navigation, layer toggle, auto-navigate on changes
+- `viewer/index.html` — ~5100 line monolith with full 2D/3D visualization:
+  - **Layouts**: Force, Tree, Radial, Bloom (Fibonacci explosion), Force Graph 3D (vasturiano)
+  - **View layers**: All, Structure, Dependency, Runtime (filter edge groups)
+  - **2D**: D3.js SVG with edge bundling (bezier curves), arrow markers, focal navigation
+  - **3D**: Three.js with bloom post-processing, directional arrows, breathing animation
+  - **Interaction**: Drag (children follow), click fly-to, neighbor highlight, dblclick collapse
+  - **Glyphs**: Link count badges on nodes (color-coded by connectivity)
+  - **Combo nodes**: Dblclick collapse/expand subtrees with visual indicators
+  - **Runtime**: SSE live events, animated particles on edges, activity log
 
 ### Runtime Layer (Working, Built 2026-02-10)
 - `test-shop/src/services/wi-probe.js` — Express middleware + event listener
@@ -189,70 +197,97 @@ This solves both the **scale problem** (never load 1000+ nodes) and the **usabil
 
 ---
 
-## Optional Future Enhancements
+### Phase F: Viewer 3D & Visual Polish ✓ DONE (2026-02-15 to 2026-02-19)
+*Goal: Make the viewer visually rich and interactive in both 2D and 3D*
 
-These weren't in the original plan, but could add value:
+| # | Task | Status |
+|---|------|--------|
+| F1 | 3D viewer with Three.js (scene, camera, orbit controls) | ✓ Done — `9fe2398` |
+| F2 | 4 layout modes (Force, Tree, Radial, Bloom) in both 2D/3D | ✓ Done — `f64ecf1` to `5486a32` |
+| F3 | Bloom layout (Fibonacci explosion + subtree-weighted orbits) | ✓ Done — `e76b6b9` |
+| F4 | Drag-with-children in fixed layouts | ✓ Done — `81c6481` |
+| F5 | Force Graph 3D (vasturiano library) as tester mode | ✓ Done — `6842a58` |
+| F6 | UI overhaul (drawer, dropdowns, collapsible sidebar) | ✓ Done — `b2c68dd`, `d72cd7c` |
 
-### Performance & Scale
-- **F1: Large Codebase Optimization** (1000+ files)
-  - Benchmark: Test on real-world repos (Linux kernel, React, Django)
-  - Add: Parallel file processing, graph streaming, incremental saves
-  - Estimate: 1-2 days
+**Result**: Full 2D↔3D toggle. 5 layout modes. Professional UI with sidebar filters, detail drawer, and toolbar dropdowns.
 
-- **F2: Neo4j Backend** (When NetworkX becomes too slow)
-  - Migrate from NetworkX in-memory → Neo4j persistent DB
-  - Benefits: Scales to 100K+ nodes, graph queries via Cypher
-  - Estimate: 3-4 days
+### Phase G: Advanced Visual Techniques ✓ DONE (2026-02-19)
+*Goal: Apply research-backed visualization techniques from Cambridge Intelligence + iCAVE*
 
-### Intelligence Features
-- **F3: Database Schema Detection**
-  - Parse migration files (Prisma, Sequelize, Django ORM)
-  - Create DB_TABLE nodes, FK edges
-  - Show which code touches which tables
-  - Estimate: 2-3 days
+| # | Task | Status |
+|---|------|--------|
+| G1 | Camera fly-to on node click (3D) | ✓ Done — `1db2ef2` |
+| G2 | Neighbor highlight on hover (3D) | ✓ Done — `1db2ef2` |
+| G3 | Directional arrows on all 3D edges | ✓ Done — `1db2ef2` |
+| G4 | Animated runtime particles (3D) | ✓ Done — `1db2ef2` |
+| G5 | Right-click unpin + node dragging (3D) | ✓ Done — `1db2ef2` |
+| G6 | Combo/group nodes (dblclick collapse/expand) | ✓ Done — `e76b6b9` |
+| G7 | Edge bundling (bezier curves for non-structural) | ✓ Done — `e76b6b9` |
+| G8 | Bloom glow post-processing (UnrealBloomPass) | ✓ Done — `334c831` |
+| G9 | Node glyphs (link count badges, color-coded) | ✓ Done — `334c831` |
+| G10 | Progressive disclosure | ✓ Partial — combo nodes + focal point = basic form |
 
-- **F4: More Languages**
-  - Add: Ruby, PHP, Swift, Kotlin, Scala
-  - Requires: Tree-sitter grammars + pattern rules
-  - Estimate: 1 day per language
+**Result**: 3D mode now has fly-to camera, neighbor glow, arrows, particles, bloom, and glyphs. 2D has edge bundling, combo nodes, and glyphs. Research techniques from Cambridge Intelligence and iCAVE applied.
 
-- **F5: API Dependency Graph**
-  - Detect external API calls (REST, GraphQL)
-  - Show: Which services depend on external APIs
-  - Impact: "If Stripe goes down, what breaks?"
-  - Estimate: 1-2 days
+---
 
-### Team & Collaboration
-- **F6: CI/CD Integration**
-  - GitHub Action: Auto-update graph on PR
-  - Comment on PR: "This change affects 12 functions"
-  - Estimate: 2-3 days
+## Upcoming Phases
 
-- **F7: Slack/Discord Notifications**
-  - Alert: "Critical function modified"
-  - Alert: "Breaking change detected in API"
-  - Estimate: 1 day
+### Phase H: Knowledge Graph Visualization (NEXT)
+*Goal: New modes for knowledge/vector data (Oracle v2, embeddings, concepts)*
+*Source: Research from Cambridge Intelligence, iCAVE, arxiv 2412.05289, CorGIE*
 
-- **F8: Team Dashboard**
-  - Show: Code ownership, stale components, high-risk areas
-  - Multi-user support with shared graphs
-  - Estimate: 3-5 days
+**Key insight**: Current modes work for CODE (hierarchy-driven). Knowledge data needs new modes where VECTORS, CONCEPTS, and TIME drive layout.
 
-### Developer Experience
-- **F9: Browser Extension**
-  - Chrome/Firefox extension for GitHub/GitLab
-  - Click file → see impact analysis inline
-  - Estimate: 3-4 days
+| # | Task | Dependencies | Priority |
+|---|------|-------------|----------|
+| H1 | **Semantic mode** — UMAP/t-SNE projection of vector embeddings | Python: `umap-learn`, ChromaDB vectors | HIGH |
+| H2 | **Concept cluster mode** — nodes grouped into transparent bubbles by tag | Concept data from Oracle v2 | HIGH |
+| H3 | **Temporal mode** — X=time, Y=concept, shows knowledge evolution | Creation timestamps | MEDIUM |
+| H4 | **Lineage mode** — extends/supersedes chains as directed tree | Oracle `extends`/`supersedes` links | MEDIUM |
+| H5 | **Similarity heatmap** — matrix view, rows×cols=docs, color=similarity | ChromaDB pairwise similarity | LOW |
+| H6 | **Dual-view mode** — topology vs semantics side by side | H1 + force layout | LOW |
+| H7 | **Peculiarity metric** — highlight unexpected embedding neighbors | ChromaDB vectors | LOW |
 
-- **F10: VSCode Extension**
-  - Sidebar: Graph view of current file
-  - Hover: Show dependencies
-  - Estimate: 4-5 days
+**Prerequisites** (must build first):
+1. `server.py` — Add `/api/umap` endpoint (project vectors → 2D/3D coords via UMAP)
+2. `server.py` — Add `/api/oracle` endpoint (wire Oracle v2 as alternative data source)
+3. `viewer/index.html` — Data source switcher (code graph vs knowledge graph)
 
-- **F11: Annotate Mode**
-  - Add manual notes/warnings to nodes
-  - Mark: "Legacy code", "Deprecated", "Tech debt"
-  - Estimate: 1-2 days
+**Framework — What drives node position?**
+
+| Mode | Position Driver | Data Type |
+|------|----------------|-----------|
+| Structure | Containment hierarchy | Code |
+| Dependency | Import/call topology | Code |
+| Runtime | Live events (overlay) | Code |
+| **Semantic** | **Vector similarity** | **Knowledge** |
+| **Concept** | **Concept tags** | **Knowledge** |
+| **Temporal** | **Creation time** | **Knowledge** |
+| **Lineage** | **extends/supersedes** | **Knowledge** |
+
+### Phase I: Code Quality & Maintainability
+*Goal: Keep the codebase healthy as it grows*
+
+| # | Task | Priority |
+|---|------|----------|
+| I1 | Split `index.html` monolith (~5100 lines) into JS/CSS modules | HIGH |
+| I2 | Add unit tests for layout algorithms | MEDIUM |
+| I3 | Performance profiling (benchmark with 500+ node graphs) | MEDIUM |
+| I4 | Give "Tester" layout (Force Graph 3D) a real purpose or remove | LOW |
+
+### Phase J: Platform Extensions (Future)
+*Goal: Bring WI to other tools and workflows*
+
+| # | Task | Priority |
+|---|------|----------|
+| J1 | Neo4j backend (when NetworkX becomes too slow, 100K+ nodes) | WHEN NEEDED |
+| J2 | More languages (Ruby, PHP, Swift, Kotlin) — 1 day/language | ON DEMAND |
+| J3 | Database schema detection (Prisma, Sequelize, Django ORM) | MEDIUM |
+| J4 | External API dependency graph ("If Stripe goes down, what breaks?") | MEDIUM |
+| J5 | CI/CD integration (GitHub Action: auto-update graph on PR) | LOW |
+| J6 | VSCode extension (sidebar graph view of current file) | LOW |
+| J7 | Annotation mode (manual notes/warnings on nodes) | LOW |
 
 ---
 
@@ -269,6 +304,10 @@ These weren't in the original plan, but could add value:
 | ADR-007 | Focal point navigation over full graph | Scale solution — never render 1000+ nodes |
 | ADR-008 | Three scan modes (snapshot/incremental/expansion) | Different needs at different times |
 | ADR-009 | Runtime layer is overlay, not persistent | Runtime events don't modify the structural graph |
+| ADR-010 | In-layout orbit scaling, NOT post-processing | Post-processing push causes cascading spikes — recursive positionNode() moves entire subtrees naturally |
+| ADR-011 | 2D↔3D toggle over 3D-only replacement | Keep 2D strengths (SVG text, edge bundling, markers) + add 3D for spatial exploration |
+| ADR-012 | 3d-force-graph as tester mode, not replacement | Library is good for native 3D physics but our hand-rolled 3D has better layout integration + runtime overlay |
+| ADR-013 | "What drives layout?" framework for new modes | Each mode maps one data dimension to node position — prevents mode confusion |
 
 ---
 
@@ -308,7 +347,7 @@ workspace-intelligence/
 
   viewer/
     server.py              # HTTP + SSE server + expansion scan API
-    index.html             # D3.js graph viewer with all features
+    index.html             # ~5100 line monolith: D3 2D + Three.js 3D + vasturiano 3D
 
   api/                     # Phase E: AI agent consumption
     mcp_server.py          # MCP server (5 tools, JSON-RPC 2.0)
