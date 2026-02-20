@@ -781,6 +781,18 @@ body {
       </div>
     </div>
 
+    <!-- Category filter (for Oracle knowledge graphs) -->
+    <div class="filter-section collapsed" id="category-filter-section" style="display:none;">
+      <h3 onclick="toggleSection(this)">Categories</h3>
+      <div class="section-content">
+        <div class="filter-actions">
+          <button onclick="toggleAll('category', true)">All</button>
+          <button onclick="toggleAll('category', false)">None</button>
+        </div>
+        <div class="filter-group" id="category-filters"></div>
+      </div>
+    </div>
+
     <!-- Display options -->
     <div class="filter-section">
       <h3 onclick="toggleSection(this)">Display</h3>
@@ -1142,6 +1154,7 @@ const filters = {
   tier:      { macro: true, meso: true, micro: true },
   nodeType:  {},
   edgeGroup: {},
+  category:  {},  // Oracle knowledge graph categories
   search:    '',
 };
 
@@ -1309,6 +1322,27 @@ function buildFilterUI() {
     lbl.querySelector('input').addEventListener('change', onFilterChange);
     egContainer.appendChild(lbl);
   }
+
+  // Category filters (for Oracle knowledge graphs)
+  const catContainer = document.getElementById('category-filters');
+  const catSection = document.getElementById('category-filter-section');
+  if (catContainer && Object.keys(filters.category).length > 0) {
+    catContainer.innerHTML = '';
+    const sortedCats = Object.keys(filters.category).sort();
+    for (const cat of sortedCats) {
+      const lbl = document.createElement('label');
+      lbl.innerHTML = `
+        <input type="checkbox" data-filter="category" data-value="${cat}" ${filters.category[cat] ? 'checked' : ''}>
+        <span class="color-dot" style="background:#9B59B6"></span>
+        ${cat}
+      `;
+      lbl.querySelector('input').addEventListener('change', onFilterChange);
+      catContainer.appendChild(lbl);
+    }
+    if (catSection) catSection.style.display = '';
+  } else {
+    if (catSection) catSection.style.display = 'none';
+  }
 }
 
 function onFilterChange(e) {
@@ -1453,6 +1487,15 @@ function getFilteredData() {
     const tier = n.tier || NODE_TIER[n.type] || 'micro';
     if (!filters.tier[tier]) return false;
     if (!filters.nodeType[n.type]) return false;
+
+    // Category filter (for Oracle nodes with categories)
+    const hasCategoryFilters = Object.keys(filters.category).length > 0;
+    if (hasCategoryFilters && n.categories && n.categories.length > 0) {
+      const nodeCategories = Array.isArray(n.categories) ? n.categories : [];
+      const hasEnabledCategory = nodeCategories.some(cat => filters.category[cat]);
+      if (!hasEnabledCategory) return false;
+    }
+
     if (searchTerm && !n.name.toLowerCase().includes(searchTerm) &&
         !n.id.toLowerCase().includes(searchTerm)) return false;
     return true;
@@ -2029,11 +2072,16 @@ function applySemanticLayout(nodes) {
   const height = svg.node().clientHeight || 600;
   console.log('[Semantic] Canvas size:', width, 'x', height);
 
-  // Build concept → node list
+  // Build concept/category → node list (use concepts first, fall back to categories)
   const conceptMap = new Map();
   for (const n of nodes) {
     const tags = (n.concepts && n.concepts.length ? n.concepts : n.tags) || [];
-    const primary = tags[0] || '__ungrouped__';
+    let primary = tags[0];
+    // If no concepts/tags, try categories
+    if (!primary && n.categories && n.categories.length) {
+      primary = n.categories[0];
+    }
+    if (!primary) primary = '__ungrouped__';
     if (!conceptMap.has(primary)) conceptMap.set(primary, []);
     conceptMap.get(primary).push(n);
   }
@@ -4296,6 +4344,16 @@ async function switchSource(sourceId) {
     const nodeTypes = new Set(rawData.nodes.map(n => n.type));
     for (const t of nodeTypes) filters.nodeType[t] = true;
     for (const g of Object.keys(filters.edgeGroup)) filters.edgeGroup[g] = true;
+
+    // Initialize category filters (for Oracle knowledge graphs)
+    filters.category = {};
+    const allCategories = new Set();
+    for (const n of rawData.nodes) {
+      if (n.categories && Array.isArray(n.categories)) {
+        for (const cat of n.categories) allCategories.add(cat);
+      }
+    }
+    for (const cat of allCategories) filters.category[cat] = true;
 
     if (rawData.nodes.length > 200) {
       filters.tier.micro = false;
