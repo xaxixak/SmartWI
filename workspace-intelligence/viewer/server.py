@@ -84,7 +84,7 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
-        # API: Load specific graph
+        # API: Load specific graph (enriched via adapter)
         elif path == "/api/graph":
             graph_path = params.get("path", [None])[0]
             if not graph_path:
@@ -95,8 +95,24 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(404, "Graph not found")
                 return
 
-            with open(graph_path, "r", encoding="utf-8") as f:
-                body = f.read().encode("utf-8")
+            # Route through WI adapter for enrichment (tags, categories, timestamps)
+            try:
+                graph_stem = Path(graph_path).stem
+                print(f"[SERVER] Loading via adapter: wi:{graph_stem}", flush=True)
+                graph = adapter_load_graph(f"wi:{graph_stem}")
+                result = graph.to_dict()
+                print(f"[SERVER] Adapter OK — keys: {list(result.keys())}, nodes: {len(result.get('nodes', []))}", flush=True)
+                body = json.dumps(result).encode("utf-8")
+            except Exception as e:
+                # Log failure and fallback to raw file read
+                import traceback
+                print(f"[SERVER] Adapter FAILED: {e}", flush=True)
+                traceback.print_exc()
+                with open(VIEWER_DIR / "adapter_error.log", "w") as ef:
+                    ef.write(f"Adapter failed for {graph_path}: {e}\n")
+                    traceback.print_exc(file=ef)
+                with open(graph_path, "r", encoding="utf-8") as f:
+                    body = f.read().encode("utf-8")
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

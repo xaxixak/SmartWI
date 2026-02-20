@@ -1203,8 +1203,23 @@ async function loadData(graphPathOverride) {
     const apiUrl = `/api/graph?path=${encodeURIComponent(graphPath)}`;
     const resp = await fetch(apiUrl);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    rawData = await resp.json();
+    const data = await resp.json();
     currentGraphPath = graphPath;
+
+    // Handle adapter response (has source/capabilities) or raw JSON (just nodes/edges)
+    if (data.capabilities) {
+      rawData = { nodes: data.nodes, edges: data.edges };
+      const caps = data.capabilities;
+      currentCapabilities = caps;
+
+      // Apply edge groups from capabilities
+      if (caps.edge_groups) {
+        rebuildEdgeGroups(caps.edge_groups);
+      }
+    } else {
+      rawData = data;
+      currentCapabilities = {};
+    }
 
     // Update URL without reload
     const url = new URL(window.location);
@@ -1234,8 +1249,20 @@ async function loadData(graphPathOverride) {
   // Initialize filters with all observed types checked
   const nodeTypes = new Set(rawData.nodes.map(n => n.type));
   for (const t of nodeTypes) filters.nodeType[t] = true;
-  // Always restore WI edge groups when loading via loadData (clears any non-WI groups)
-  rebuildEdgeGroups(EDGE_GROUPS);
+  // Restore edge groups (if not already set from capabilities above)
+  if (!currentCapabilities.edge_groups) {
+    rebuildEdgeGroups(EDGE_GROUPS);
+  }
+
+  // Initialize category filters from enriched nodes
+  filters.category = {};
+  const allCategories = new Set();
+  for (const n of rawData.nodes) {
+    if (n.categories && Array.isArray(n.categories)) {
+      for (const cat of n.categories) allCategories.add(cat);
+    }
+  }
+  for (const cat of allCategories) filters.category[cat] = true;
 
   // For large graphs, start with micro tier hidden for better performance
   if (rawData.nodes.length > 200) {
@@ -1248,6 +1275,17 @@ async function loadData(graphPathOverride) {
   updateGraph();
   updateStats();
   checkNodeLimit();
+
+  // Enable concept clusters button if nodes have concepts
+  const clusterBtn = document.getElementById('btn-clusters-toggle');
+  if (clusterBtn) {
+    const hasConcepts = currentCapabilities.has_concepts || rawData.nodes.some(n => n.concepts && n.concepts.length > 0);
+    clusterBtn.style.display = hasConcepts ? '' : 'none';
+    if (hasConcepts && !showConceptClusters) {
+      showConceptClusters = true;
+      clusterBtn.classList.add('active');
+    }
+  }
 
   // Sync graph-selector (hidden, for backward compat)
   const sel = document.getElementById('graph-selector');
@@ -2589,11 +2627,15 @@ async function reloadGraph() {
     const apiUrl = `/api/graph?path=${encodeURIComponent(graphPath)}`;
     const resp = await fetch(apiUrl);
     if (!resp.ok) return;
-    const newData = await resp.json();
+    const freshData = await resp.json();
+
+    // Handle adapter response (has source/capabilities) or raw JSON
+    const newNodes = freshData.nodes || [];
+    const newEdges = freshData.edges || [];
 
     // Track which nodes are new (for highlighting)
     const oldNodeIds = new Set(rawData.nodes.map(n => n.id));
-    const newNodeIds = new Set(newData.nodes.map(n => n.id));
+    const newNodeIds = new Set(newNodes.map(n => n.id));
     const addedNodeIds = new Set([...newNodeIds].filter(id => !oldNodeIds.has(id)));
 
     // Preserve positions from existing nodes
@@ -2602,7 +2644,7 @@ async function reloadGraph() {
       if (n.x !== undefined) posMap[n.id] = { x: n.x, y: n.y, vx: n.vx, vy: n.vy };
     }
 
-    rawData = newData;
+    rawData = { nodes: newNodes, edges: newEdges };
     computeNodeDepths();  // recompute hierarchy for new data
 
     // Normalize tiers and mark highlight status
@@ -3987,7 +4029,7 @@ function enterForceGraph3D() {
       type: n.type,
       tier: tier,
       depth: depth,
-      val: DEPTH_SIZES[Math.min(depth, DEPTH_SIZES.length - 1)],
+      val: DEPTH_SIZES[Math.min(depth, DEPTH_SIZES.length - 1)] * 8,
       color: TYPE_COLORS[n.type] || TIER_COLORS[tier] || '#FF8C42',
       _isInfra: INFRA_TYPES.has(n.type),
       _isData: DATA_TYPES.has(n.type),
@@ -4012,25 +4054,27 @@ function enterForceGraph3D() {
   const highlightLinks = new Set();
   let hoverNode = null;
 
-  // Create or re-use instance
+  // Re-use: destroy old instance and create fresh (avoids stale config)
   if (fg3dInstance) {
-    fg3dInstance.graphData({ nodes: fg3dNodes, links: fg3dLinks });
-    return;
+    fg3dInstance._destructor && fg3dInstance._destructor();
+    container.innerHTML = '';
+    fg3dInstance = null;
   }
 
   fg3dInstance = ForceGraph3D()(container)
     .graphData({ nodes: fg3dNodes, links: fg3dLinks })
-    .backgroundColor('#000000')
+    .backgroundColor('#0a0a1a')
     .nodeId('id')
     .nodeVal('val')
+    .nodeRelSize(6)
     .nodeLabel(n => `<b>${n.name}</b><br><span style="color:#8899aa">${n.type} (${n.tier})</span>`)
     .nodeColor(n => highlightNodes.has(n) ? (n === hoverNode ? '#ffffff' : '#ffdd57') : n.color)
     .nodeOpacity(0.9)
-    .nodeResolution(12)
+    .nodeResolution(16)
     .nodeThreeObject(n => {
       // Custom geometry by category: octahedron for infra, box for data, sphere for code
       if (!n._isInfra && !n._isData) return undefined; // default sphere
-      const size = Math.cbrt(n.val) * 2.5;
+      const size = Math.cbrt(n.val) * 1.5;
       const geometry = n._isInfra
         ? new THREE.OctahedronGeometry(size, 0)
         : new THREE.BoxGeometry(size * 1.3, size * 1.3, size * 1.3);
@@ -4111,6 +4155,12 @@ function enterForceGraph3D() {
       node.fy = undefined;
       node.fz = undefined;
     });
+
+  // Fix camera clipping — prevent nodes vanishing on zoom in/out
+  const camera = fg3dInstance.camera();
+  camera.near = 0.1;
+  camera.far = 100000;
+  camera.updateProjectionMatrix();
 
   // Tune forces after creation
   fg3dInstance.d3Force('link').distance(link => {
@@ -5102,11 +5152,22 @@ function build3DGraph() {
   const { nodes, edges } = getFilteredData();
   const edgeCounts = computeEdgeCounts(nodes, edges);
 
+  // Tier-based 3D sizes for non-hierarchical data (e.g., Oracle knowledge graph)
+  const TIER_3D_SIZES = { macro: 18, meso: 14, micro: 10 };
+
   // Create node meshes
   for (const d of nodes) {
-    const depth = nodeDepthMap.get(d.id) ?? 4;
-    const r = DEPTH_SIZES[Math.min(depth, DEPTH_SIZES.length - 1)];
-    const r3d = r * 0.6;  // Scale down for 3D
+    let r3d;
+    if (currentCapabilities.has_hierarchy === false) {
+      // Non-hierarchical data — use tier-based sizing (bigger nodes)
+      const tier = d.tier || NODE_TIER[d.type] || 'micro';
+      r3d = TIER_3D_SIZES[tier] || 10;
+    } else {
+      // Hierarchical data — use depth-based sizing
+      const depth = nodeDepthMap.get(d.id) ?? 4;
+      const r = DEPTH_SIZES[Math.min(depth, DEPTH_SIZES.length - 1)];
+      r3d = r * 0.6;
+    }
 
     const colorHex = TYPE_COLORS[d.type] || TIER_COLORS[d.tier || NODE_TIER[d.type] || 'micro'] || '#FF8C42';
     const color = new THREE.Color(colorHex);
@@ -5193,10 +5254,12 @@ function build3DGraph() {
     const colorHex = EDGE_GROUP_COLORS[group] || '#888';
 
     if (!lineMaterial[group]) {
+      // Non-hierarchical sources (Oracle): brighter edges since nodes are spaced far apart
+      const isFlat = (currentCapabilities.has_hierarchy === false);
       lineMaterial[group] = new THREE.LineBasicMaterial({
         color: new THREE.Color(colorHex),
         transparent: true,
-        opacity: (group === 'structural') ? 0.3 : 0.5,
+        opacity: isFlat ? 0.6 : ((group === 'structural') ? 0.3 : 0.5),
         linewidth: 1,
       });
     }
