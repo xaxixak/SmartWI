@@ -217,10 +217,8 @@ class WIAdapter(BaseAdapter):
 
         # Enrich nodes with auto-generated tags, categories, timestamps
         edge_index = _build_edge_index(edges)
-        print(f"[WI Adapter] Enriching {len(nodes)} nodes...", flush=True)
         for node in nodes:
             _enrich_node(node, edge_index)
-        print(f"[WI Adapter] Done. Sample: {nodes[0].get('categories')}, {nodes[0].get('concepts')}", flush=True)
 
         has_cats = any(n.get("categories") for n in nodes)
         has_concepts = any(n.get("concepts") for n in nodes)

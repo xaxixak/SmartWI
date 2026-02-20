@@ -98,19 +98,10 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
             # Route through WI adapter for enrichment (tags, categories, timestamps)
             try:
                 graph_stem = Path(graph_path).stem
-                print(f"[SERVER] Loading via adapter: wi:{graph_stem}", flush=True)
                 graph = adapter_load_graph(f"wi:{graph_stem}")
-                result = graph.to_dict()
-                print(f"[SERVER] Adapter OK — keys: {list(result.keys())}, nodes: {len(result.get('nodes', []))}", flush=True)
-                body = json.dumps(result).encode("utf-8")
-            except Exception as e:
-                # Log failure and fallback to raw file read
-                import traceback
-                print(f"[SERVER] Adapter FAILED: {e}", flush=True)
-                traceback.print_exc()
-                with open(VIEWER_DIR / "adapter_error.log", "w") as ef:
-                    ef.write(f"Adapter failed for {graph_path}: {e}\n")
-                    traceback.print_exc(file=ef)
+                body = json.dumps(graph.to_dict()).encode("utf-8")
+            except Exception:
+                # Fallback to raw file read
                 with open(graph_path, "r", encoding="utf-8") as f:
                     body = f.read().encode("utf-8")
 
