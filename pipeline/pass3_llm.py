@@ -107,6 +107,22 @@ class LLMPass:
     def client(self) -> LLMClient:
         """Lazy-initialize LLM client (requires API key at call time, not init time)."""
         if self._client is None:
+            import os
+            # Auto-load .env file if present (never committed — in .gitignore)
+            env_path = Path(__file__).resolve().parent.parent / ".env"
+            if env_path.exists() and not os.environ.get("ANTHROPIC_API_KEY"):
+                for line in env_path.read_text().splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, _, val = line.partition("=")
+                        os.environ.setdefault(key.strip(), val.strip())
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                raise EnvironmentError(
+                    "ANTHROPIC_API_KEY not set. Either:\n"
+                    "  1. Create a .env file in workspace-intelligence/ with:\n"
+                    "     ANTHROPIC_API_KEY=sk-ant-...\n"
+                    "  2. Or set it in your terminal: set ANTHROPIC_API_KEY=sk-ant-..."
+                )
             self._client = LLMClient()
         return self._client
 
@@ -259,21 +275,20 @@ class LLMPass:
             self._files_skipped += 1
             return result
 
-        # For simplicity, analyze only the first chunk if file is chunked
-        # (In production, you might want to analyze all chunks)
-        chunk = chunks[0]
-        content_to_analyze = chunk.content
+        # Analyze all chunks and merge results
+        all_edges_data = []
+        all_nodes_data = []
+        classification = None
 
         # Step 4: Get known nodes from graph
         all_nodes = self.store._nodes
         known_node_names = [node.name for node in all_nodes.values()]
-        known_nodes_dict = {node.name: node for node in all_nodes.values()}
 
         try:
-            # Step 5: Phase 1 - File Classification (Haiku)
+            # Step 5: Phase 1 - File Classification (Haiku) — use first chunk
             classify_model = self.router.route(AnalysisTask.FILE_CLASSIFICATION)
             classify_messages = build_classify_prompt(
-                content_to_analyze, str(file_path)
+                chunks[0].content, str(file_path)
             )
 
             classify_response = await self.client.analyze(
@@ -289,25 +304,39 @@ class LLMPass:
                 classify_response, "classify_file"
             )
 
-            # Step 6: Phase 2 - Edge Discovery (Sonnet)
+            # Step 6: Phase 2 - Edge Discovery (Sonnet) — process ALL chunks
             edge_model = self.router.route(AnalysisTask.EDGE_DISCOVERY)
             edge_system = build_system_prompt(known_node_names)
-            edge_messages = build_edge_discovery_prompt(
-                content_to_analyze, str(file_path), known_node_names
-            )
 
-            edge_response = await self.client.analyze(
-                messages=edge_messages,
-                model=edge_model.model_id,
-                tools=[DISCOVER_EDGES_TOOL, DISCOVER_NODES_TOOL],
-                system=edge_system,
-                max_tokens=edge_model.max_tokens,
-                temperature=edge_model.temperature,
-                cache_system=True,  # Cache the system prompt
-            )
+            for chunk_idx, chunk in enumerate(chunks):
+                chunk_label = f"{file_path}[chunk {chunk_idx+1}/{len(chunks)}]" if len(chunks) > 1 else str(file_path)
+                logger.debug(f"  Analyzing {chunk_label}")
 
-            edges_data = self._parse_tool_response(edge_response, "discover_edges")
-            nodes_data = self._parse_tool_response(edge_response, "discover_nodes")
+                edge_messages = build_edge_discovery_prompt(
+                    chunk.content, str(file_path), known_node_names
+                )
+
+                edge_response = await self.client.analyze(
+                    messages=edge_messages,
+                    model=edge_model.model_id,
+                    tools=[DISCOVER_EDGES_TOOL, DISCOVER_NODES_TOOL],
+                    system=edge_system,
+                    max_tokens=edge_model.max_tokens,
+                    temperature=edge_model.temperature,
+                    cache_system=True,  # Cache the system prompt
+                )
+
+                chunk_edges = self._parse_tool_response(edge_response, "discover_edges")
+                chunk_nodes = self._parse_tool_response(edge_response, "discover_nodes")
+
+                if chunk_edges and "edges" in chunk_edges:
+                    all_edges_data.extend(chunk_edges["edges"])
+                if chunk_nodes and "nodes" in chunk_nodes:
+                    all_nodes_data.extend(chunk_nodes["nodes"])
+
+            # Merge into unified format
+            edges_data = {"edges": all_edges_data} if all_edges_data else None
+            nodes_data = {"nodes": all_nodes_data} if all_nodes_data else None
 
             # Step 8 & 9: Parse responses and create graph objects
 

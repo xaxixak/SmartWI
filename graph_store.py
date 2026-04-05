@@ -147,6 +147,20 @@ class GraphStore:
             if e.source_id == source_id and e.target_id == target_id
         ]
 
+    def remove_edge(self, source_id: str, target_id: str, edge_type: EdgeType) -> bool:
+        """Remove an edge from the store and NetworkX graph.
+
+        Returns True if the edge was found and removed, False otherwise.
+        """
+        edge_key = f"{source_id}->{target_id}:{edge_type.value}"
+        removed = edge_key in self._edges
+        self._edges.pop(edge_key, None)
+        try:
+            self.graph.remove_edge(source_id, target_id)
+        except Exception:
+            pass
+        return removed
+
     def mark_edge_stale(self, source_id: str, target_id: str, edge_type: EdgeType) -> None:
         """Mark an edge as stale."""
         edge_key = f"{source_id}->{target_id}:{edge_type.value}"

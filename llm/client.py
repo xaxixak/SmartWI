@@ -208,10 +208,6 @@ class LLMClient:
             "content-type": "application/json",
         }
 
-        # Add prompt caching header if enabled
-        if cache_system:
-            headers["anthropic-beta"] = "prompt-caching-2024-07-31"
-
         # Retry loop
         for attempt in range(self.MAX_RETRIES + 1):
             try:
@@ -226,6 +222,13 @@ class LLMClient:
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
 
+                # Log the actual error body for debugging
+                try:
+                    error_body = e.response.json()
+                    error_msg = error_body.get("error", {}).get("message", str(error_body))
+                except Exception:
+                    error_msg = e.response.text[:500]
+
                 # Retry on rate limit (429) or overloaded (529)
                 if status_code in (429, 529) and attempt < self.MAX_RETRIES:
                     delay = min(self.BASE_DELAY * (2 ** attempt), self.MAX_DELAY)
@@ -234,8 +237,10 @@ class LLMClient:
                     await asyncio.sleep(delay)
                     continue
 
-                # Non-retryable error or max retries exceeded
-                raise
+                # Non-retryable error — raise with API error details
+                raise Exception(
+                    f"Anthropic API {status_code}: {error_msg}"
+                ) from e
 
     async def analyze(
         self,

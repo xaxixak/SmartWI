@@ -218,6 +218,20 @@ def _run_git(args: List[str], cwd: Path) -> Optional[str]:
 # PUBLIC API
 # =============================================================================
 
+def _git_toplevel(cwd: Path) -> Path:
+    """
+    Get the actual git repository root directory.
+
+    Git diff returns paths relative to this root, so we must use it
+    (not the user-provided workspace path) as repo_root in ChangeSet.
+    Falls back to *cwd* if git is unavailable.
+    """
+    output = _run_git(["rev-parse", "--show-toplevel"], cwd=cwd)
+    if output:
+        return Path(output.strip()).resolve()
+    return cwd
+
+
 def detect_changes(repo_path: Path, ref: str = "HEAD~1") -> ChangeSet:
     """
     Detect file changes between ``ref`` and HEAD in the given repository.
@@ -232,15 +246,16 @@ def detect_changes(repo_path: Path, ref: str = "HEAD~1") -> ChangeSet:
         ``ChangeSet`` if the repo has no git history or the command fails.
     """
     repo_path = Path(repo_path).resolve()
+    git_root = _git_toplevel(repo_path)
     ref_range = f"{ref}..HEAD"
 
     output = _run_git(["diff", "--name-status", ref], cwd=repo_path)
     if output is None:
-        return ChangeSet(repo_root=repo_path, ref_range=ref_range)
+        return ChangeSet(repo_root=git_root, ref_range=ref_range)
 
     changes = _parse_name_status(output)
     return ChangeSet(
-        repo_root=repo_path,
+        repo_root=git_root,
         ref_range=ref_range,
         changes=changes,
     )
@@ -256,12 +271,13 @@ def detect_uncommitted(repo_path: Path) -> ChangeSet:
     (empty repo).
 
     Args:
-        repo_path: Path to the repository root.
+        repo_path: Path to the repository root (or any directory inside it).
 
     Returns:
         A ``ChangeSet`` with all uncommitted file changes.
     """
     repo_path = Path(repo_path).resolve()
+    git_root = _git_toplevel(repo_path)
 
     # Try HEAD first (staged + unstaged vs last commit)
     output = _run_git(["diff", "--name-status", "HEAD"], cwd=repo_path)
@@ -285,16 +301,16 @@ def detect_uncommitted(repo_path: Path) -> ChangeSet:
         ))
 
     return ChangeSet(
-        repo_root=repo_path,
+        repo_root=git_root,
         ref_range="uncommitted",
         changes=changes,
     )
 
 
 def _get_untracked_files(repo_path: Path) -> List[str]:
-    """Return list of untracked file paths relative to repo root."""
+    """Return list of untracked file paths relative to git root."""
     output = _run_git(
-        ["ls-files", "--others", "--exclude-standard"],
+        ["ls-files", "--others", "--exclude-standard", "--full-name"],
         cwd=repo_path,
     )
     if not output:
@@ -304,13 +320,14 @@ def _get_untracked_files(repo_path: Path) -> List[str]:
 
 def _detect_untracked(repo_path: Path) -> ChangeSet:
     """Build a ChangeSet from only untracked files (no git history at all)."""
+    git_root = _git_toplevel(repo_path)
     untracked = _get_untracked_files(repo_path)
     changes = [
         FileChange(path=Path(p), change_type=ChangeType.ADDED)
         for p in untracked
     ]
     return ChangeSet(
-        repo_root=repo_path,
+        repo_root=git_root,
         ref_range="uncommitted",
         changes=changes,
     )

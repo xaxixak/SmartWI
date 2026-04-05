@@ -1,19 +1,19 @@
 """
-Workspace Intelligence Layer - Vector Search (Story 5.3)
-========================================================
+Workspace Intelligence Layer - Hybrid Search (Story 5.3 v2)
+============================================================
 
-Hybrid search engine for the workspace intelligence graph.
+Hybrid search engine combining three strategies via Reciprocal Rank Fusion:
+  1. BM25 fulltext search   (via rank_bm25 library)
+  2. Semantic embedding search (via sentence-transformers)
+  3. Exact substring match  (boosted to top)
 
-Search strategy (applied in order, results merged with deduplication):
-  1. Exact match   -- substring match on node name (score boosted to 1.0)
-  2. Keyword match  -- tokenized query words vs. node text fields
-  3. TF-IDF search  -- cosine similarity on TF-IDF vectors (semantic)
-
-TF-IDF is implemented from scratch using only stdlib (math, collections, re)
-to avoid adding sklearn or numpy as dependencies.
+RRF formula: score(d) = sum(1 / (k + rank_i(d))) for each ranker i
+This naturally combines rankings without needing score normalization.
 
 The index is built lazily on first search if not already built.
 Call build_index() explicitly after bulk graph mutations.
+
+Inspired by GitNexus's hybrid search architecture.
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ from __future__ import annotations
 import math
 import re
 import sys
+import warnings
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 # ---------------------------------------------------------------------------
-# Project imports -- adjust sys.path so we can import from the project root
-# regardless of where the script is invoked from.
+# Project imports
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -37,8 +37,38 @@ from ontology import GraphNode, NodeType, Tier  # noqa: E402
 
 
 # =============================================================================
-# STOPWORDS
+# OPTIONAL DEPENDENCIES (graceful degradation)
 # =============================================================================
+
+_HAS_BM25 = False
+_HAS_EMBEDDINGS = False
+
+try:
+    from rank_bm25 import BM25Okapi
+    _HAS_BM25 = True
+except ImportError:
+    pass
+
+try:
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    _HAS_EMBEDDINGS = True
+except ImportError:
+    pass
+
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+# RRF constant k — standard value from the original RRF paper
+RRF_K = 60
+
+# Embedding model — small, fast, good for code
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+# Maximum nodes to embed in one batch
+EMBEDDING_BATCH_SIZE = 256
 
 STOPWORDS: Set[str] = {
     "the", "a", "an", "is", "are", "was", "were", "in", "on", "at", "to",
@@ -54,10 +84,9 @@ STOPWORDS: Set[str] = {
 @dataclass
 class SearchResult:
     """A single search result with scoring metadata."""
-
     node: GraphNode
     score: float          # 0.0 to 1.0, higher = better match
-    match_type: str       # "exact", "keyword", "semantic"
+    match_type: str       # "exact", "bm25", "semantic", "keyword", "rrf"
     matched_field: str    # "name", "description", "tags", "metadata"
 
 
@@ -69,153 +98,11 @@ _TOKEN_RE = re.compile(r"[a-zA-Z0-9]+")
 
 
 def tokenize(text: str) -> List[str]:
-    """
-    Split *text* into lowercase alpha-numeric tokens, filtering stopwords.
-
-    Handles camelCase and snake_case by splitting on word boundaries before
-    the main regex pass:
-      - ``processPayment``  -> ["process", "payment"]
-      - ``process_payment`` -> ["process", "payment"]
-    """
-    # Expand camelCase: insert space before uppercase runs
+    """Split text into lowercase tokens, handling camelCase and snake_case."""
     expanded = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
-    # Expand snake_case / kebab-case
     expanded = expanded.replace("_", " ").replace("-", " ")
-
     tokens = _TOKEN_RE.findall(expanded.lower())
     return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
-
-
-# =============================================================================
-# TF-IDF ENGINE (stdlib only)
-# =============================================================================
-
-class _TfidfEngine:
-    """
-    Minimal TF-IDF implementation using only stdlib.
-
-    Vocabulary is built from a corpus of token lists.  Each document is
-    represented as a sparse vector (dict mapping term index -> weight).
-    Query vectors are built on the fly using the same IDF values.
-    """
-
-    def __init__(self) -> None:
-        self._vocab: Dict[str, int] = {}       # term -> index
-        self._idf: Dict[int, float] = {}        # index -> idf weight
-        self._doc_vectors: List[Dict[int, float]] = []  # one per doc
-        self._doc_norms: List[float] = []        # pre-computed L2 norms
-
-    # --------------------------------------------------------------------- #
-    # Index building
-    # --------------------------------------------------------------------- #
-
-    def fit(self, corpus: List[List[str]]) -> None:
-        """
-        Build vocabulary and IDF from *corpus* (list of token-lists).
-
-        Each entry in *corpus* corresponds to one document (node).
-        """
-        n_docs = len(corpus)
-        if n_docs == 0:
-            return
-
-        # --- build vocabulary & document frequencies -----------------------
-        df: Counter = Counter()          # term -> num docs containing it
-        vocab_set: Dict[str, int] = {}
-        idx = 0
-
-        for tokens in corpus:
-            seen: Set[str] = set()
-            for token in tokens:
-                if token not in vocab_set:
-                    vocab_set[token] = idx
-                    idx += 1
-                if token not in seen:
-                    df[token] += 1
-                    seen.add(token)
-
-        self._vocab = vocab_set
-
-        # --- IDF: log(N / df) with +1 smoothing to avoid division by zero --
-        self._idf = {
-            vocab_set[term]: math.log((n_docs + 1) / (count + 1)) + 1.0
-            for term, count in df.items()
-        }
-
-        # --- TF-IDF vectors per document -----------------------------------
-        self._doc_vectors = []
-        self._doc_norms = []
-
-        for tokens in corpus:
-            tf = Counter(tokens)
-            vec: Dict[int, float] = {}
-            for term, count in tf.items():
-                tidx = vocab_set[term]
-                # sub-linear TF: 1 + log(tf) to dampen high-frequency terms
-                tf_weight = 1.0 + math.log(count) if count > 0 else 0.0
-                vec[tidx] = tf_weight * self._idf.get(tidx, 0.0)
-            self._doc_vectors.append(vec)
-            self._doc_norms.append(_l2_norm(vec))
-
-    # --------------------------------------------------------------------- #
-    # Query
-    # --------------------------------------------------------------------- #
-
-    def query(self, tokens: List[str], limit: int = 10) -> List[Tuple[int, float]]:
-        """
-        Return ``(doc_index, cosine_similarity)`` pairs sorted descending.
-
-        Unknown tokens (not in vocabulary) are silently ignored.
-        """
-        if not self._doc_vectors or not tokens:
-            return []
-
-        # Build query vector using the same IDF weights
-        tf = Counter(tokens)
-        q_vec: Dict[int, float] = {}
-        for term, count in tf.items():
-            tidx = self._vocab.get(term)
-            if tidx is not None:
-                tf_weight = 1.0 + math.log(count) if count > 0 else 0.0
-                q_vec[tidx] = tf_weight * self._idf.get(tidx, 0.0)
-
-        if not q_vec:
-            return []
-
-        q_norm = _l2_norm(q_vec)
-        if q_norm == 0.0:
-            return []
-
-        # Cosine similarity against every document
-        results: List[Tuple[int, float]] = []
-        for doc_idx, doc_vec in enumerate(self._doc_vectors):
-            d_norm = self._doc_norms[doc_idx]
-            if d_norm == 0.0:
-                continue
-            dot = _dot_product(q_vec, doc_vec)
-            sim = dot / (q_norm * d_norm)
-            if sim > 0.0:
-                results.append((doc_idx, sim))
-
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:limit]
-
-
-def _dot_product(a: Dict[int, float], b: Dict[int, float]) -> float:
-    """Sparse dot product of two vectors represented as dicts."""
-    # Iterate over the smaller dict for efficiency
-    if len(a) > len(b):
-        a, b = b, a
-    total = 0.0
-    for idx, val in a.items():
-        if idx in b:
-            total += val * b[idx]
-    return total
-
-
-def _l2_norm(vec: Dict[int, float]) -> float:
-    """L2 norm of a sparse vector."""
-    return math.sqrt(sum(v * v for v in vec.values()))
 
 
 # =============================================================================
@@ -223,17 +110,12 @@ def _l2_norm(vec: Dict[int, float]) -> float:
 # =============================================================================
 
 def _node_text(node: GraphNode) -> str:
-    """
-    Concatenate all searchable text fields of a node into a single string.
-
-    Fields included: name, description, tags, and select metadata values.
-    """
+    """Concatenate all searchable text fields of a node."""
     parts: List[str] = [node.name]
     if node.description:
         parts.append(node.description)
     if node.tags:
         parts.extend(node.tags)
-    # Include select metadata string values (e.g., http_method, framework)
     for key in ("http_method", "http_path", "framework", "orm", "table_name",
                 "trigger", "prefix"):
         val = node.metadata.get(key)
@@ -248,57 +130,189 @@ def _node_tokens(node: GraphNode) -> List[str]:
 
 
 # =============================================================================
+# TF-IDF ENGINE (stdlib fallback when rank_bm25 not installed)
+# =============================================================================
+
+class _TfidfEngine:
+    """Minimal TF-IDF implementation using only stdlib."""
+
+    def __init__(self) -> None:
+        self._vocab: Dict[str, int] = {}
+        self._idf: Dict[int, float] = {}
+        self._doc_vectors: List[Dict[int, float]] = []
+        self._doc_norms: List[float] = []
+
+    def fit(self, corpus: List[List[str]]) -> None:
+        n_docs = len(corpus)
+        if n_docs == 0:
+            return
+
+        df: Counter = Counter()
+        vocab_set: Dict[str, int] = {}
+        idx = 0
+
+        for tokens in corpus:
+            seen: Set[str] = set()
+            for token in tokens:
+                if token not in vocab_set:
+                    vocab_set[token] = idx
+                    idx += 1
+                if token not in seen:
+                    df[token] += 1
+                    seen.add(token)
+
+        self._vocab = vocab_set
+        self._idf = {
+            vocab_set[term]: math.log((n_docs + 1) / (count + 1)) + 1.0
+            for term, count in df.items()
+        }
+
+        self._doc_vectors = []
+        self._doc_norms = []
+
+        for tokens in corpus:
+            tf = Counter(tokens)
+            vec: Dict[int, float] = {}
+            for term, count in tf.items():
+                tidx = vocab_set[term]
+                tf_weight = 1.0 + math.log(count) if count > 0 else 0.0
+                vec[tidx] = tf_weight * self._idf.get(tidx, 0.0)
+            self._doc_vectors.append(vec)
+            norm = math.sqrt(sum(v * v for v in vec.values()))
+            self._doc_norms.append(norm)
+
+    def query(self, tokens: List[str], limit: int = 10) -> List[Tuple[int, float]]:
+        if not self._doc_vectors or not tokens:
+            return []
+
+        tf = Counter(tokens)
+        q_vec: Dict[int, float] = {}
+        for term, count in tf.items():
+            tidx = self._vocab.get(term)
+            if tidx is not None:
+                tf_weight = 1.0 + math.log(count) if count > 0 else 0.0
+                q_vec[tidx] = tf_weight * self._idf.get(tidx, 0.0)
+
+        if not q_vec:
+            return []
+
+        q_norm = math.sqrt(sum(v * v for v in q_vec.values()))
+        if q_norm == 0.0:
+            return []
+
+        results: List[Tuple[int, float]] = []
+        for doc_idx, doc_vec in enumerate(self._doc_vectors):
+            d_norm = self._doc_norms[doc_idx]
+            if d_norm == 0.0:
+                continue
+            dot = sum(q_vec.get(k, 0) * doc_vec.get(k, 0) for k in q_vec)
+            sim = dot / (q_norm * d_norm)
+            if sim > 0.0:
+                results.append((doc_idx, sim))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:limit]
+
+
+# =============================================================================
 # SEARCH INDEX
 # =============================================================================
 
 class SearchIndex:
     """
-    Hybrid search index over a :class:`GraphStore`.
+    Hybrid search index over a GraphStore.
 
-    Combines three search strategies, merging and deduplicating results:
-
-    1. **Exact match** -- case-insensitive substring match on node *name*.
-       Scores 1.0.
-    2. **Keyword match** -- tokenized query words matched against all node
-       text fields.  Score is the fraction of query tokens found.
-    3. **TF-IDF semantic** -- cosine similarity on TF-IDF vectors built from
-       all node text.  Score is the raw cosine similarity (0-1).
-
-    The index is built lazily on the first call to :meth:`search` if
-    :meth:`build_index` has not been called yet.
+    Uses available backends in order of preference:
+      - BM25 (rank_bm25) > TF-IDF (stdlib fallback) for keyword search
+      - Sentence-transformers > skip for semantic search
+      - Reciprocal Rank Fusion to combine all rankings
     """
 
-    def __init__(self, store: GraphStore) -> None:
+    def __init__(self, store: GraphStore, enable_embeddings: bool = True) -> None:
         self.store = store
-        self._tfidf_matrix: Optional[_TfidfEngine] = None
+        self._enable_embeddings = enable_embeddings and _HAS_EMBEDDINGS
+
+        # Index state
         self._node_ids: List[str] = []
         self._node_token_cache: Dict[str, List[str]] = {}
+        self._corpus: List[List[str]] = []
         self._built = False
+
+        # BM25 engine (or TF-IDF fallback)
+        self._bm25: Optional[BM25Okapi] = None
+        self._tfidf: Optional[_TfidfEngine] = None
+
+        # Embedding engine
+        self._embedder: Optional[SentenceTransformer] = None
+        self._embeddings: Optional[object] = None  # numpy array
+        self._node_texts: List[str] = []
+
+    @property
+    def search_backend(self) -> str:
+        """Return name of active keyword search backend."""
+        if self._bm25 is not None:
+            return "bm25"
+        if self._tfidf is not None:
+            return "tfidf"
+        return "none"
+
+    @property
+    def has_embeddings(self) -> bool:
+        """Whether semantic embedding search is active."""
+        return self._embeddings is not None
 
     # --------------------------------------------------------------------- #
     # Index lifecycle
     # --------------------------------------------------------------------- #
 
     def build_index(self) -> None:
-        """
-        Build (or rebuild) the TF-IDF index from all nodes in the store.
-
-        Call this after bulk mutations to keep the index fresh.
-        """
+        """Build (or rebuild) the search index from all nodes in the store."""
         nodes = self.store.get_all_nodes()
         self._node_ids = [n.id for n in nodes]
-        corpus: List[List[str]] = []
+        self._corpus = []
         self._node_token_cache.clear()
+        self._node_texts = []
 
         for node in nodes:
             tokens = _node_tokens(node)
-            corpus.append(tokens)
+            self._corpus.append(tokens)
             self._node_token_cache[node.id] = tokens
+            self._node_texts.append(_node_text(node))
 
-        engine = _TfidfEngine()
-        engine.fit(corpus)
-        self._tfidf_matrix = engine
+        # Build BM25 index (preferred) or TF-IDF fallback
+        if _HAS_BM25 and self._corpus:
+            self._bm25 = BM25Okapi(self._corpus)
+            self._tfidf = None
+        elif self._corpus:
+            engine = _TfidfEngine()
+            engine.fit(self._corpus)
+            self._tfidf = engine
+            self._bm25 = None
+
+        # Build embedding index (if enabled and available)
+        if self._enable_embeddings and _HAS_EMBEDDINGS and self._node_texts:
+            self._build_embedding_index()
+
         self._built = True
+
+    def _build_embedding_index(self) -> None:
+        """Build sentence-transformer embedding index."""
+        try:
+            if self._embedder is None:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    self._embedder = SentenceTransformer(EMBEDDING_MODEL)
+
+            # Encode all node texts in batches
+            self._embeddings = self._embedder.encode(
+                self._node_texts,
+                batch_size=EMBEDDING_BATCH_SIZE,
+                show_progress_bar=False,
+                normalize_embeddings=True,  # L2-normalize for cosine sim via dot product
+            )
+        except Exception as e:
+            print(f"[WARN] Embedding index build failed: {e}")
+            self._embeddings = None
 
     def _ensure_index(self) -> None:
         """Build the index lazily if it hasn't been built yet."""
@@ -317,154 +331,177 @@ class SearchIndex:
         tier_filter: Optional[Tier] = None,
     ) -> List[SearchResult]:
         """
-        Hybrid search: exact match -> keyword -> TF-IDF semantic.
+        Hybrid search with Reciprocal Rank Fusion.
 
-        Results from all three strategies are merged.  If the same node
-        appears in multiple result sets the highest score wins.
-
-        Args:
-            query:       Free-text search query.
-            limit:       Maximum number of results to return.
-            type_filter: Optional -- only return nodes of this type.
-            tier_filter: Optional -- only return nodes in this tier.
-
-        Returns:
-            List of :class:`SearchResult` sorted by score descending.
+        Combines results from all available search strategies using RRF
+        to produce a unified ranking without needing score normalization.
         """
         self._ensure_index()
 
         if not query or not query.strip():
             return []
 
-        # Collect results from all strategies
-        exact = self._exact_search(query)
-        keyword = self._keyword_search(query)
-        semantic = self._tfidf_search(query, limit=limit * 3)
+        # Collect ranked lists from each strategy
+        # Each list: [(node_id, match_type), ...]
+        ranked_lists: List[List[Tuple[str, str]]] = []
 
-        # Merge: deduplicate by node id, keeping the highest score
-        best: Dict[str, SearchResult] = {}
-        for result in exact + keyword + semantic:
-            nid = result.node.id
-            if nid not in best or result.score > best[nid].score:
-                best[nid] = result
+        # 1. Exact substring match (always available)
+        exact_ids = self._exact_search_ids(query)
+        if exact_ids:
+            ranked_lists.append([(nid, "exact") for nid in exact_ids])
 
-        # Apply filters
-        results = list(best.values())
-        if type_filter is not None:
-            results = [r for r in results if r.node.type == type_filter]
-        if tier_filter is not None:
-            results = [r for r in results if r.node.tier == tier_filter]
+        # 2. BM25 or TF-IDF keyword search
+        keyword_match_type = "bm25" if self._bm25 else "keyword"
+        keyword_ids = self._keyword_search_ids(query, limit=limit * 5)
+        if keyword_ids:
+            ranked_lists.append([(nid, keyword_match_type) for nid in keyword_ids])
 
-        # Sort by score descending, then by name for stability
-        results.sort(key=lambda r: (-r.score, r.node.name))
-        return results[:limit]
+        # 3. Semantic embedding search
+        if self._embeddings is not None:
+            semantic_ids = self._semantic_search_ids(query, limit=limit * 5)
+            if semantic_ids:
+                ranked_lists.append([(nid, "semantic") for nid in semantic_ids])
 
-    # --------------------------------------------------------------------- #
-    # Search strategies
-    # --------------------------------------------------------------------- #
+        # Apply RRF to combine rankings
+        rrf_scores: Dict[str, float] = {}
+        rrf_match_types: Dict[str, str] = {}
 
-    def _exact_search(self, query: str) -> List[SearchResult]:
-        """
-        Exact case-insensitive substring match on node name.
+        for ranked_list in ranked_lists:
+            for rank, (nid, match_type) in enumerate(ranked_list):
+                rrf_scores[nid] = rrf_scores.get(nid, 0.0) + 1.0 / (RRF_K + rank + 1)
+                # Track which strategy contributed most
+                if nid not in rrf_match_types:
+                    rrf_match_types[nid] = match_type
 
-        A hit on the name scores 1.0.  A hit only on the description
-        scores 0.9.
-        """
-        q_lower = query.lower().strip()
+        # Boost exact matches significantly
+        for nid in (exact_ids[:3] if exact_ids else []):
+            if nid in rrf_scores:
+                rrf_scores[nid] *= 2.0
+
+        # Normalize scores to [0, 1]
+        if rrf_scores:
+            max_score = max(rrf_scores.values())
+            if max_score > 0:
+                rrf_scores = {nid: s / max_score for nid, s in rrf_scores.items()}
+
+        # Build results
         results: List[SearchResult] = []
+        for nid, score in sorted(rrf_scores.items(), key=lambda x: -x[1]):
+            node = self.store.get_node(nid)
+            if node is None:
+                continue
+
+            # Apply filters
+            if type_filter is not None and node.type != type_filter:
+                continue
+            if tier_filter is not None and node.tier != tier_filter:
+                continue
+
+            match_type = rrf_match_types.get(nid, "rrf")
+            matched_field = _best_matched_field(node, set(tokenize(query)))
+
+            results.append(SearchResult(
+                node=node,
+                score=round(score, 4),
+                match_type=match_type,
+                matched_field=matched_field,
+            ))
+
+            if len(results) >= limit:
+                break
+
+        return results
+
+    # --------------------------------------------------------------------- #
+    # Individual search strategies (return ranked node ID lists)
+    # --------------------------------------------------------------------- #
+
+    def _exact_search_ids(self, query: str) -> List[str]:
+        """Exact substring match on node name — returns ranked node IDs."""
+        q_lower = query.lower().strip()
+        name_hits = []
+        desc_hits = []
 
         for node in self.store.get_all_nodes():
             if q_lower in node.name.lower():
-                results.append(SearchResult(
-                    node=node,
-                    score=1.0,
-                    match_type="exact",
-                    matched_field="name",
-                ))
+                name_hits.append(node.id)
             elif node.description and q_lower in node.description.lower():
+                desc_hits.append(node.id)
+
+        # Name hits first, then description hits
+        return name_hits + desc_hits
+
+    def _keyword_search_ids(self, query: str, limit: int = 50) -> List[str]:
+        """BM25 or TF-IDF keyword search — returns ranked node IDs."""
+        query_tokens = tokenize(query)
+        if not query_tokens:
+            return []
+
+        if self._bm25 is not None:
+            # BM25 search
+            scores = self._bm25.get_scores(query_tokens)
+            # Get top indices sorted by score descending
+            indexed_scores = [(i, float(scores[i])) for i in range(len(scores)) if scores[i] > 0]
+            indexed_scores.sort(key=lambda x: -x[1])
+            return [self._node_ids[i] for i, _ in indexed_scores[:limit]]
+
+        elif self._tfidf is not None:
+            # TF-IDF fallback
+            results = self._tfidf.query(query_tokens, limit=limit)
+            return [self._node_ids[doc_idx] for doc_idx, _ in results]
+
+        return []
+
+    def _semantic_search_ids(self, query: str, limit: int = 50) -> List[str]:
+        """Sentence-transformer embedding search — returns ranked node IDs."""
+        if self._embedder is None or self._embeddings is None:
+            return []
+
+        try:
+            query_embedding = self._embedder.encode(
+                [query],
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+            # Cosine similarity via dot product (embeddings are L2-normalized)
+            similarities = np.dot(self._embeddings, query_embedding.T).flatten()
+
+            # Get top indices
+            top_indices = np.argsort(similarities)[::-1][:limit]
+            return [
+                self._node_ids[int(i)]
+                for i in top_indices
+                if similarities[i] > 0.1  # minimum similarity threshold
+            ]
+        except Exception:
+            return []
+
+    # --------------------------------------------------------------------- #
+    # Legacy API (backward compatible)
+    # --------------------------------------------------------------------- #
+
+    def _exact_search(self, query: str) -> List[SearchResult]:
+        """Legacy: exact search returning SearchResult objects."""
+        results = []
+        for nid in self._exact_search_ids(query):
+            node = self.store.get_node(nid)
+            if node:
                 results.append(SearchResult(
-                    node=node,
-                    score=0.9,
-                    match_type="exact",
-                    matched_field="description",
+                    node=node, score=1.0,
+                    match_type="exact", matched_field="name",
                 ))
         return results
 
     def _keyword_search(self, query: str) -> List[SearchResult]:
-        """
-        Keyword matching: tokenize the query and check how many tokens
-        appear in each node's text.
-
-        Score = matched_tokens / total_query_tokens  (0.0 to ~0.85, capped
-        below exact match).
-        """
-        query_tokens = tokenize(query)
-        if not query_tokens:
-            return []
-
-        query_set = set(query_tokens)
-        results: List[SearchResult] = []
-
-        for node in self.store.get_all_nodes():
-            node_tokens = self._node_token_cache.get(node.id)
-            if node_tokens is None:
-                node_tokens = _node_tokens(node)
-            node_token_set = set(node_tokens)
-
-            matched = query_set & node_token_set
-            if not matched:
-                continue
-
-            raw_score = len(matched) / len(query_set)
-            # Cap keyword score at 0.85 so exact matches always rank higher
-            score = min(raw_score * 0.85, 0.85)
-
-            # Determine which field contributed the match
-            matched_field = _best_matched_field(node, matched)
-
-            results.append(SearchResult(
-                node=node,
-                score=score,
-                match_type="keyword",
-                matched_field=matched_field,
-            ))
-        return results
-
-    def _tfidf_search(self, query: str, limit: int = 30) -> List[SearchResult]:
-        """
-        TF-IDF cosine similarity search.
-
-        Score is the raw cosine similarity scaled to [0, 0.80] so that
-        keyword and exact matches rank above purely semantic matches when
-        scores are close.
-        """
-        if self._tfidf_matrix is None:
-            return []
-
-        query_tokens = tokenize(query)
-        if not query_tokens:
-            return []
-
-        raw_results = self._tfidf_matrix.query(query_tokens, limit=limit)
-
-        results: List[SearchResult] = []
-        for doc_idx, cosine_sim in raw_results:
-            if doc_idx >= len(self._node_ids):
-                continue
-            node_id = self._node_ids[doc_idx]
-            node = self.store.get_node(node_id)
-            if node is None:
-                continue
-
-            # Scale cosine similarity into [0, 0.80]
-            score = min(cosine_sim * 0.80, 0.80)
-
-            results.append(SearchResult(
-                node=node,
-                score=score,
-                match_type="semantic",
-                matched_field="description",
-            ))
+        """Legacy: keyword search returning SearchResult objects."""
+        results = []
+        for nid in self._keyword_search_ids(query):
+            node = self.store.get_node(nid)
+            if node:
+                results.append(SearchResult(
+                    node=node, score=0.85,
+                    match_type="keyword", matched_field="name",
+                ))
         return results
 
 
@@ -473,11 +510,7 @@ class SearchIndex:
 # =============================================================================
 
 def _best_matched_field(node: GraphNode, matched_tokens: Set[str]) -> str:
-    """
-    Determine which node field contributed the most matched tokens.
-
-    Returns one of: "name", "description", "tags", "metadata".
-    """
+    """Determine which node field contributed the most matched tokens."""
     name_tokens = set(tokenize(node.name))
     if matched_tokens & name_tokens:
         return "name"
@@ -503,8 +536,12 @@ if __name__ == "__main__":
     from ontology import Provenance
 
     print("=" * 70)
-    print("  Story 5.3 -- Vector Search Demo")
+    print("  Hybrid Search Demo (BM25 + Semantic + RRF)")
     print("=" * 70)
+
+    print(f"\nBackends available:")
+    print(f"  BM25: {_HAS_BM25}")
+    print(f"  Embeddings: {_HAS_EMBEDDINGS}")
 
     # --- Build a small demo graph ------------------------------------------
     store = GraphStore()
@@ -602,9 +639,11 @@ if __name__ == "__main__":
     print(f"\nLoaded {len(demo_nodes)} demo nodes into GraphStore.")
 
     # --- Build search index ------------------------------------------------
-    index = SearchIndex(store)
+    index = SearchIndex(store, enable_embeddings=True)
     index.build_index()
-    print("TF-IDF index built.\n")
+    print(f"Search backend: {index.search_backend}")
+    print(f"Embeddings active: {index.has_embeddings}")
+    print()
 
     # --- Run demo queries --------------------------------------------------
     queries = [
@@ -616,40 +655,18 @@ if __name__ == "__main__":
         "stripe",
         "inventory",
         "processPayment",
+        "how does checkout work",  # semantic query
+        "what handles money",     # semantic query
     ]
 
     for q in queries:
-        print(f"--- Query: \"{q}\" ---")
+        print(f'--- Query: "{q}" ---')
         results = index.search(q, limit=5)
         if not results:
             print("  (no results)")
         for r in results:
-            print(f"  {r.score:.3f}  [{r.match_type:<8}]  [{r.matched_field:<12}]  "
+            print(f"  {r.score:.4f}  [{r.match_type:<8}]  [{r.matched_field:<12}]  "
                   f"{r.node.type.value:<14}  {r.node.name}")
         print()
 
-    # --- Filtered search ---------------------------------------------------
-    print("--- Filtered: type=Function, query='payment' ---")
-    results = index.search("payment", type_filter=NodeType.FUNCTION, limit=5)
-    for r in results:
-        print(f"  {r.score:.3f}  [{r.match_type:<8}]  {r.node.name}")
-    print()
-
-    print("--- Filtered: tier=MICRO, query='order' ---")
-    results = index.search("order", tier_filter=Tier.MICRO, limit=5)
-    for r in results:
-        print(f"  {r.score:.3f}  [{r.match_type:<8}]  {r.node.name}")
-    print()
-
-    # --- Tokenizer demo ----------------------------------------------------
-    print("--- Tokenizer demo ---")
-    test_strings = [
-        "processPayment",
-        "validate_inventory_stock",
-        "POST /api/v1/orders",
-        "JWT authentication middleware",
-    ]
-    for s in test_strings:
-        print(f"  {s!r:40s} -> {tokenize(s)}")
-
-    print("\nDone.")
+    print("Done.")

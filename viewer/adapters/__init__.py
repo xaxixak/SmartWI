@@ -3,12 +3,14 @@ from .wi_adapter import WIAdapter
 from .oracle_adapter import OracleAdapter
 from .csv_adapter import CSVAdapter
 from .json_adapter import JSONAdapter
+from .gitnexus_adapter import GitNexusAdapter
 
 ADAPTERS = {
     "wi": WIAdapter(),
     "oracle": OracleAdapter(),
     "csv": CSVAdapter(),
     "json": JSONAdapter(),
+    "gitnexus": GitNexusAdapter(),
 }
 
 

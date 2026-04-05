@@ -435,6 +435,9 @@ def selective_reindex(
             result.errors.append(error_msg)
             result.files_processed += 1
 
+    # Post-reindex: resolve IMPORTS edges (same logic as orchestrator)
+    _resolve_imports_post_reindex(store, changeset.repo_root)
+
     result.duration_ms = (time.perf_counter() - start) * 1000
     logger.info(
         "Selective reindex complete: %d files processed, "
@@ -450,6 +453,81 @@ def selective_reindex(
         result.duration_ms,
     )
     return result
+
+
+# =============================================================================
+# POST-REINDEX: IMPORTS RESOLUTION
+# =============================================================================
+
+def _resolve_imports_post_reindex(store: GraphStore, repo_root: Path) -> None:
+    """
+    Resolve IMPORTS edges after selective reindex.
+
+    Mirrors the orchestrator's import resolution logic:
+    - Resolve relative imports to FILE nodes
+    - Remove dangling package imports (express, mongoose, etc.)
+    """
+    # Build file-node lookup by posix path
+    file_nodes_by_path: Dict[str, GraphNode] = {}
+    for node in store._nodes.values():
+        if node.type == NodeType.FILE:
+            if node.location and node.location.file_path:
+                file_nodes_by_path[node.location.file_path.replace("\\", "/")] = node
+            path_meta = node.metadata.get("path", "")
+            if path_meta:
+                file_nodes_by_path[str(path_meta).replace("\\", "/")] = node
+
+    # Find all IMPORTS edges
+    imports_to_fix = []
+    for edge_key, edge in list(store._edges.items()):
+        if edge.type == EdgeType.IMPORTS:
+            target = store.get_node(edge.target_id)
+            if target is None:
+                imports_to_fix.append(edge)
+
+    resolved_count = 0
+    removed_count = 0
+
+    for edge in imports_to_fix:
+        # Try to resolve the import target
+        import_name = edge.target_id.split(":")[-1] if ":" in edge.target_id else edge.target_id
+
+        # Try relative resolution from source file
+        source_node = store.get_node(edge.source_id)
+        resolved = False
+
+        if source_node and source_node.location and source_node.location.file_path:
+            source_dir = Path(source_node.location.file_path).parent
+            for ext in [".js", ".ts", ".jsx", ".tsx", ".py", "/index.js", "/index.ts"]:
+                candidate = source_dir / (import_name + ext)
+                candidate_posix = candidate.resolve().as_posix() if candidate.exists() else candidate.as_posix()
+                target_node = file_nodes_by_path.get(candidate_posix)
+                if target_node:
+                    # Replace dangling edge with resolved one
+                    store.remove_edge(edge.source_id, edge.target_id, EdgeType.IMPORTS)
+                    new_edge = GraphEdge(
+                        source_id=edge.source_id,
+                        target_id=target_node.id,
+                        type=EdgeType.IMPORTS,
+                        description=f"Imports {target_node.name}",
+                        provenance=Provenance.SCANNER,
+                        confidence=0.9,
+                    )
+                    store.add_edge(new_edge, validate=False)
+                    resolved_count += 1
+                    resolved = True
+                    break
+
+        if not resolved:
+            # Package import — remove dangling edge
+            store.remove_edge(edge.source_id, edge.target_id, EdgeType.IMPORTS)
+            removed_count += 1
+
+    if resolved_count or removed_count:
+        logger.info(
+            "  Post-reindex imports: resolved %d, removed %d dangling",
+            resolved_count, removed_count,
+        )
 
 
 # =============================================================================
@@ -687,9 +765,8 @@ if __name__ == "__main__":
 
     changeset = ChangeSet(
         repo_root=workspace,
+        ref_range="HEAD~1..HEAD",
         changes=changes,
-        base_ref="HEAD~1",
-        head_ref="HEAD",
     )
 
     print(f"\nSimulated changeset: {len(changeset.changes)} files")

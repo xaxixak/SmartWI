@@ -1,24 +1,40 @@
 """
-Workspace Intelligence - MCP Server (Story 4.3)
-================================================
+Workspace Intelligence - MCP Server (Story 4.3 + Phase 5 Enhancement)
+=====================================================================
 
 Stdio-based MCP server exposing graph intelligence to AI agents.
 
 Protocol: JSON-RPC 2.0 over stdin/stdout (MCP spec 2024-11-05)
 Transport: stdio (newline-delimited JSON)
 
-Tools exposed:
-  1. search_entity    - Search nodes by name/type/tag
+Tools (8):
+  1. search_entity    - Search nodes by name/type/tag (BM25+RRF hybrid)
   2. traverse_graph   - Walk upstream/downstream from a node
   3. get_context      - Generate a ContextPack for AI consumption
   4. impact_analysis  - Show blast radius of a node
   5. get_stats        - Graph statistics
+  6. list_flows       - List detected execution flows
+  7. list_clusters    - List community clusters (Leiden)
+  8. detect_changes   - Git diff → affected graph nodes
+
+Resources (5):
+  - wi://repos                   - List indexed workspaces
+  - wi://repo/{name}/stats       - Graph statistics
+  - wi://repo/{name}/clusters    - Community clusters
+  - wi://repo/{name}/flows       - Execution flows
+  - wi://repo/{name}/schema      - Ontology schema
+
+Prompts (3):
+  - detect_impact   - Pre-commit change analysis
+  - explore_area    - Navigate unfamiliar code
+  - generate_map    - Architecture documentation
 
 Usage:
   python -m api.mcp_server --graph workspace_graph.json
 """
 
 import json
+import subprocess
 import sys
 import argparse
 import threading
@@ -183,6 +199,84 @@ TOOLS: List[Dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "list_flows",
+        "description": (
+            "List detected execution flows in the codebase. Each flow traces a path "
+            "from an entry point (route handler, main function, event handler) through "
+            "the call graph to terminal nodes. Shows flow name, type, step count, and "
+            "entry/terminal node IDs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "flow_type": {
+                    "type": "string",
+                    "enum": ["route", "event", "startup", "general"],
+                    "description": "Filter by flow type (optional)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of flows to return (default: 20)",
+                    "default": 20,
+                },
+            },
+        },
+    },
+    {
+        "name": "list_clusters",
+        "description": (
+            "List community clusters detected via Leiden algorithm. Each cluster is a "
+            "group of closely related code entities (functions, classes, endpoints) that "
+            "work together. Shows cluster label, member count, cohesion score, and members."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "min_size": {
+                    "type": "integer",
+                    "description": "Minimum cluster size to include (default: 2)",
+                    "default": 2,
+                },
+                "include_members": {
+                    "type": "boolean",
+                    "description": "Include member node IDs in each cluster (default: true)",
+                    "default": True,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of clusters to return (default: 20)",
+                    "default": 20,
+                },
+            },
+        },
+    },
+    {
+        "name": "detect_changes",
+        "description": (
+            "Detect which graph nodes are affected by recent git changes. "
+            "Runs git diff to find changed files, then maps those files to nodes in the graph. "
+            "Useful for pre-commit impact analysis and understanding the blast radius of a change."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo_path": {
+                    "type": "string",
+                    "description": "Path to the git repository (default: current directory)",
+                },
+                "diff_target": {
+                    "type": "string",
+                    "description": (
+                        "What to diff against. 'staged' = staged changes only, "
+                        "'working' = all working directory changes, 'HEAD~1' = last commit, "
+                        "or any git ref. Default: 'working'"
+                    ),
+                    "default": "working",
+                },
+            },
         },
     },
 ]
@@ -498,6 +592,198 @@ def tool_get_stats(store: GraphStore, arguments: Dict[str, Any]) -> Dict[str, An
     return stats
 
 
+def tool_list_flows(store: GraphStore, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """List execution flows detected in the graph (from Pass 5)."""
+    flow_type_filter = arguments.get("flow_type")
+    limit = arguments.get("limit", 20)
+
+    # Flow nodes are Event nodes tagged with "flow"
+    flow_nodes = [
+        n for n in store._nodes.values()
+        if n.type == NodeType.EVENT and "flow" in n.tags
+    ]
+
+    # Apply flow_type filter
+    if flow_type_filter:
+        flow_nodes = [
+            n for n in flow_nodes
+            if n.metadata.get("flow_type") == flow_type_filter
+        ]
+
+    # Sort by step count descending (most interesting flows first)
+    flow_nodes.sort(key=lambda n: -(n.metadata.get("step_count", 0)))
+
+    flows = []
+    for n in flow_nodes[:limit]:
+        meta = n.metadata
+        flows.append({
+            "id": n.id,
+            "name": n.name,
+            "flow_type": meta.get("flow_type", "general"),
+            "step_count": meta.get("step_count", 0),
+            "entry_point_id": meta.get("entry_point_id"),
+            "terminal_id": meta.get("terminal_id"),
+            "steps": meta.get("steps", []),
+            "description": n.description,
+        })
+
+    return {
+        "total_flows": len(flow_nodes),
+        "returned": len(flows),
+        "flows": flows,
+    }
+
+
+def tool_list_clusters(store: GraphStore, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """List community clusters (Leiden/Louvain) from the graph."""
+    min_size = arguments.get("min_size", 2)
+    include_members = arguments.get("include_members", True)
+    limit = arguments.get("limit", 20)
+
+    # Run Leiden clustering via intelligence module
+    # GraphIntelligence needs a file path — find the matching graph file
+    try:
+        from intelligence import GraphIntelligence
+        # Try to find the graph file for this store
+        graph_file = _find_graph_file_for_store(store)
+        if graph_file is None:
+            return {"error": "No graph file found for current store. Save graph first.", "clusters": []}
+        intel = GraphIntelligence(str(graph_file))
+        leiden_result = intel.leiden_communities()
+    except Exception as exc:
+        return {"error": f"Clustering failed: {str(exc)}", "clusters": []}
+
+    cluster_info = leiden_result.get("cluster_info", [])
+
+    # Filter by min_size
+    cluster_info = [c for c in cluster_info if c.get("size", 0) >= min_size]
+
+    # Sort by size descending
+    cluster_info.sort(key=lambda c: -c.get("size", 0))
+
+    clusters = []
+    for c in cluster_info[:limit]:
+        entry = {
+            "id": c.get("id"),
+            "label": c.get("label", f"Cluster {c.get('id')}"),
+            "size": c.get("size", 0),
+            "cohesion": round(c.get("cohesion", 0), 3),
+        }
+        if include_members:
+            entry["members"] = c.get("members", [])
+        clusters.append(entry)
+
+    return {
+        "total_clusters": len(leiden_result.get("cluster_info", [])),
+        "returned": len(clusters),
+        "backend": "leiden" if _has_leiden() else "louvain",
+        "clusters": clusters,
+    }
+
+
+def _has_leiden() -> bool:
+    """Check if leidenalg is available."""
+    try:
+        import leidenalg  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _find_graph_file_for_store(store: GraphStore) -> Optional[Path]:
+    """Find the graph file on disk that matches this store's content."""
+    # Check if the store was loaded from a file (stash the path at load time)
+    if hasattr(store, '_loaded_from') and store._loaded_from:
+        p = Path(store._loaded_from)
+        if p.exists():
+            return p
+    # Fallback: scan graphs/ directory for a file with matching node count
+    if not GRAPHS_DIR.exists():
+        return None
+    node_count = len(store._nodes)
+    for f in GRAPHS_DIR.glob("*_graph.json"):
+        try:
+            size = f.stat().st_size
+            # Quick heuristic: larger graphs have more nodes
+            # Just return first match for now
+            import json as _json
+            with open(f, "r", encoding="utf-8") as fh:
+                data = _json.load(fh)
+            if len(data.get("nodes", [])) == node_count:
+                return f
+        except Exception:
+            continue
+    return None
+
+
+def tool_detect_changes(store: GraphStore, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Map git changes to affected graph nodes."""
+    repo_path = arguments.get("repo_path", ".")
+    diff_target = arguments.get("diff_target", "working")
+
+    # Build git diff command
+    if diff_target == "staged":
+        cmd = ["git", "diff", "--cached", "--name-only"]
+    elif diff_target == "working":
+        cmd = ["git", "diff", "--name-only", "HEAD"]
+    else:
+        cmd = ["git", "diff", "--name-only", diff_target]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=repo_path, timeout=10,
+        )
+        if result.returncode != 0:
+            return {"error": f"git diff failed: {result.stderr.strip()}"}
+        changed_files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+    except FileNotFoundError:
+        return {"error": "git not found in PATH"}
+    except subprocess.TimeoutExpired:
+        return {"error": "git diff timed out"}
+
+    if not changed_files:
+        return {"changed_files": [], "affected_nodes": [], "message": "No changes detected"}
+
+    # Map changed files to graph nodes
+    affected_nodes = []
+    for node in store._nodes.values():
+        node_path = (
+            node.metadata.get("path", "")
+            or node.metadata.get("file_path", "")
+            or ""
+        )
+        if not node_path:
+            continue
+        # Normalize paths for comparison
+        node_path_norm = node_path.replace("\\", "/").lower()
+        for changed in changed_files:
+            changed_norm = changed.replace("\\", "/").lower()
+            if node_path_norm.endswith(changed_norm) or changed_norm.endswith(node_path_norm):
+                affected_nodes.append({
+                    "id": node.id,
+                    "type": node.type.value,
+                    "name": node.name,
+                    "file": node_path,
+                    "tier": node.tier.value,
+                })
+                break
+
+    # Also get blast radius for affected nodes
+    blast_radius_ids = set()
+    for an in affected_nodes:
+        upstream = store.get_upstream(an["id"], max_depth=2)
+        for u in upstream:
+            blast_radius_ids.add(u.id)
+
+    return {
+        "changed_files": changed_files,
+        "affected_nodes": affected_nodes,
+        "affected_count": len(affected_nodes),
+        "blast_radius_count": len(blast_radius_ids),
+        "blast_radius_node_ids": list(blast_radius_ids)[:50],
+    }
+
+
 # =============================================================================
 # TOOL DISPATCH
 # =============================================================================
@@ -508,8 +794,241 @@ TOOL_HANDLERS = {
     "get_context": tool_get_context,
     "impact_analysis": tool_impact_analysis,
     "get_stats": tool_get_stats,
+    "list_flows": tool_list_flows,
+    "list_clusters": tool_list_clusters,
+    "detect_changes": tool_detect_changes,
 }
 
+
+# =============================================================================
+# MCP RESOURCES
+# =============================================================================
+
+GRAPHS_DIR = Path(__file__).resolve().parent.parent / "graphs"
+
+
+def _list_graph_names() -> List[str]:
+    """List available graph names from the graphs/ directory."""
+    if not GRAPHS_DIR.exists():
+        return []
+    return sorted([
+        f.stem.replace("_graph", "")
+        for f in GRAPHS_DIR.glob("*_graph.json")
+    ])
+
+
+RESOURCE_TEMPLATES = [
+    {
+        "uriTemplate": "wi://repos",
+        "name": "Indexed Repositories",
+        "description": "List all indexed workspaces/repos with graph files",
+        "mimeType": "application/json",
+    },
+    {
+        "uriTemplate": "wi://repo/{name}/stats",
+        "name": "Repository Statistics",
+        "description": "Node/edge counts, type breakdown, health metrics for a repo",
+        "mimeType": "application/json",
+    },
+    {
+        "uriTemplate": "wi://repo/{name}/clusters",
+        "name": "Community Clusters",
+        "description": "Leiden/Louvain community clusters for a repo",
+        "mimeType": "application/json",
+    },
+    {
+        "uriTemplate": "wi://repo/{name}/flows",
+        "name": "Execution Flows",
+        "description": "Detected execution flows (entry points → terminal nodes)",
+        "mimeType": "application/json",
+    },
+    {
+        "uriTemplate": "wi://repo/{name}/schema",
+        "name": "Ontology Schema",
+        "description": "WI ontology: all node types, edge types, and tiers",
+        "mimeType": "application/json",
+    },
+]
+
+
+def _load_graph_for_resource(name: str) -> Optional[GraphStore]:
+    """Load a graph by repo name for resource reading."""
+    graph_file = GRAPHS_DIR / f"{name}_graph.json"
+    if not graph_file.exists():
+        return None
+    s = GraphStore()
+    s.load(graph_file)
+    return s
+
+
+def read_resource(uri: str, current_store: GraphStore) -> Dict[str, Any]:
+    """Read a resource by URI."""
+    if uri == "wi://repos":
+        repos = []
+        for name in _list_graph_names():
+            graph_file = GRAPHS_DIR / f"{name}_graph.json"
+            size_kb = graph_file.stat().st_size // 1024 if graph_file.exists() else 0
+            repos.append({"name": name, "graph_file": str(graph_file), "size_kb": size_kb})
+        return {"repos": repos, "count": len(repos)}
+
+    # Parse wi://repo/{name}/... URIs
+    if uri.startswith("wi://repo/"):
+        parts = uri[len("wi://repo/"):].split("/")
+        if len(parts) < 2:
+            return {"error": f"Invalid resource URI: {uri}"}
+        name = parts[0]
+        resource_type = parts[1]
+
+        s = _load_graph_for_resource(name)
+        if s is None:
+            return {"error": f"No graph found for repo '{name}'. Available: {_list_graph_names()}"}
+
+        if resource_type == "stats":
+            stats = s.stats()
+            stats["nodes_by_type"] = {k: v for k, v in stats["nodes_by_type"].items() if v > 0}
+            stats["edges_by_type"] = {k: v for k, v in stats["edges_by_type"].items() if v > 0}
+            stats["nodes_by_tier"] = {k: v for k, v in stats["nodes_by_tier"].items() if v > 0}
+            return stats
+
+        elif resource_type == "clusters":
+            return tool_list_clusters(s, {"min_size": 2, "include_members": True, "limit": 50})
+
+        elif resource_type == "flows":
+            return tool_list_flows(s, {"limit": 50})
+
+        elif resource_type == "schema":
+            return {
+                "node_types": [
+                    {"name": t.value, "tier": Tier(NODE_TIER[t]).value if t in NODE_TIER else "micro"}
+                    for t in NodeType
+                ],
+                "edge_types": [{"name": t.value} for t in EdgeType],
+                "tiers": [{"name": t.value, "description": t.name} for t in Tier],
+            }
+
+        return {"error": f"Unknown resource type: {resource_type}"}
+
+    return {"error": f"Unknown resource URI: {uri}"}
+
+
+# Import NODE_TIER for schema resource
+from ontology import NODE_TIER
+
+
+# =============================================================================
+# MCP PROMPTS
+# =============================================================================
+
+PROMPTS = [
+    {
+        "name": "detect_impact",
+        "description": (
+            "Pre-commit change analysis: identify which files changed, map them to graph nodes, "
+            "trace upstream dependencies, and assess the blast radius before committing."
+        ),
+        "arguments": [
+            {
+                "name": "file_or_function",
+                "description": "The file path or function name you're about to change",
+                "required": True,
+            },
+        ],
+    },
+    {
+        "name": "explore_area",
+        "description": (
+            "Navigate unfamiliar code: start from a node, explore its neighborhood, "
+            "understand what it connects to, what calls it, and what it depends on."
+        ),
+        "arguments": [
+            {
+                "name": "starting_point",
+                "description": "Function name, file name, or node ID to start exploring from",
+                "required": True,
+            },
+        ],
+    },
+    {
+        "name": "generate_map",
+        "description": (
+            "Generate architecture documentation: list top-level services, key endpoints, "
+            "data flows, and community clusters. Produces a structured overview."
+        ),
+        "arguments": [],
+    },
+]
+
+
+def get_prompt_messages(name: str, arguments: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Generate prompt messages for a given prompt name."""
+    if name == "detect_impact":
+        target = arguments.get("file_or_function", "unknown")
+        return [
+            {
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": (
+                        f"I'm about to change '{target}'. Help me understand the impact:\n\n"
+                        "1. Use `search_entity` to find the node in the graph\n"
+                        "2. Use `impact_analysis` on that node to see the blast radius\n"
+                        "3. Use `list_clusters` to see if this node is part of a tightly-coupled cluster\n"
+                        "4. Use `detect_changes` if there are already staged git changes\n\n"
+                        "Summarize: what could break, what tests to run, and risk level."
+                    ),
+                },
+            },
+        ]
+
+    elif name == "explore_area":
+        start = arguments.get("starting_point", "unknown")
+        return [
+            {
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": (
+                        f"I want to understand the code area around '{start}':\n\n"
+                        "1. Use `search_entity` to find it in the graph\n"
+                        "2. Use `traverse_graph` with direction='both' and depth=2 to see its neighborhood\n"
+                        "3. Use `list_flows` to see if it's part of any execution flows\n"
+                        "4. Use `get_context` with focus='understanding code structure' for full context\n\n"
+                        "Explain: what this code does, what calls it, what it depends on, "
+                        "and which execution flows it participates in."
+                    ),
+                },
+            },
+        ]
+
+    elif name == "generate_map":
+        return [
+            {
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": (
+                        "Generate an architecture overview of this codebase:\n\n"
+                        "1. Use `get_stats` to get the graph shape (node/edge counts by type)\n"
+                        "2. Use `list_clusters` to find community groups\n"
+                        "3. Use `list_flows` to find execution paths\n"
+                        "4. Use `search_entity` with type_filter='Endpoint' to find API surface\n"
+                        "5. Use `search_entity` with type_filter='Service' to find services\n\n"
+                        "Produce a structured architecture doc with:\n"
+                        "- Services and their responsibilities\n"
+                        "- Key endpoints and their flows\n"
+                        "- Community clusters and what they represent\n"
+                        "- Data models and their relationships"
+                    ),
+                },
+            },
+        ]
+
+    return [{"role": "user", "content": {"type": "text", "text": f"Unknown prompt: {name}"}}]
+
+
+# =============================================================================
+# VIEWER BROADCAST
+# =============================================================================
 
 _VIEWER_URL = "http://127.0.0.1:8080/api/agent-activity"
 
@@ -608,10 +1127,12 @@ def _dispatch_method(store: GraphStore, method: str, params: Dict[str, Any]) -> 
             "protocolVersion": "2024-11-05",
             "capabilities": {
                 "tools": {},
+                "resources": {},
+                "prompts": {},
             },
             "serverInfo": {
                 "name": "workspace-intelligence",
-                "version": "0.1.0",
+                "version": "0.2.0",
             },
         }
 
@@ -619,6 +1140,7 @@ def _dispatch_method(store: GraphStore, method: str, params: Dict[str, Any]) -> 
         # Client acknowledges initialization -- nothing to return
         return None
 
+    # --- Tools ---
     elif method == "tools/list":
         return {"tools": TOOLS}
 
@@ -634,6 +1156,33 @@ def _dispatch_method(store: GraphStore, method: str, params: Dict[str, Any]) -> 
                 }
             ],
         }
+
+    # --- Resources ---
+    elif method == "resources/list":
+        return {"resourceTemplates": RESOURCE_TEMPLATES}
+
+    elif method == "resources/read":
+        uri = params.get("uri", "")
+        data = read_resource(uri, store)
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": json.dumps(data, indent=2, default=str),
+                }
+            ],
+        }
+
+    # --- Prompts ---
+    elif method == "prompts/list":
+        return {"prompts": PROMPTS}
+
+    elif method == "prompts/get":
+        prompt_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+        messages = get_prompt_messages(prompt_name, arguments)
+        return {"messages": messages}
 
     elif method == "ping":
         return {}
@@ -680,6 +1229,7 @@ def run_server(graph_path: str) -> None:
     if graph_file.exists():
         log(f"Loading graph from {graph_file}")
         store.load(graph_file)
+        store._loaded_from = str(graph_file.resolve())
         stats = store.stats()
         log(f"Loaded {stats['total_nodes']} nodes, {stats['total_edges']} edges")
     else:

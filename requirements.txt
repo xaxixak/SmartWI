@@ -4,3 +4,11 @@ watchdog>=3.0
 tree-sitter==0.21.3
 tree-sitter-languages>=1.10.2
 httpx>=0.27.0
+# Search (Phase 2 — GitNexus-inspired hybrid search)
+rank-bm25>=0.2.2
+sentence-transformers>=3.0.0
+# Community detection (Phase 4 — Leiden clustering)
+leidenalg>=0.10.0
+python-igraph>=0.11.0
+# GitNexus adapter (Phase 1c)
+kuzu>=0.8.0

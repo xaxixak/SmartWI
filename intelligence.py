@@ -10,6 +10,15 @@ from typing import Dict, List, Any, Optional
 
 import networkx as nx
 
+# Optional: Leiden algorithm (better than Louvain)
+_HAS_LEIDEN = False
+try:
+    import leidenalg
+    import igraph as ig
+    _HAS_LEIDEN = True
+except ImportError:
+    pass
+
 
 # Edge types that represent structural containment (not semantic connections)
 _STRUCTURAL_EDGE_TYPES = {"CONTAINS", "DEFINES"}
@@ -19,6 +28,15 @@ _ROOT_NODE_TYPES = {"Workspace", "Project"}
 
 # Node types included in community detection (coarse-grained view)
 _COMMUNITY_NODE_TYPES = {"Module", "File"}
+
+# Node types included in Leiden clustering (fine-grained — all code entities)
+_LEIDEN_NODE_TYPES = {"Function", "AsyncHandler", "Middleware", "Class", "Method",
+                      "Endpoint", "DataModel", "Event", "ExternalAPI", "TypeDef"}
+
+# Edge types that represent semantic connections for clustering
+_SEMANTIC_EDGE_TYPES = {"CALLS", "IMPORTS", "READS_DB", "WRITES_DB", "CALLS_API",
+                        "EMITS_EVENT", "CONSUMES_EVENT", "ENQUEUES", "DEQUEUES",
+                        "CALLS_SERVICE", "IMPLEMENTS", "INHERITS"}
 
 
 class GraphIntelligence:
@@ -105,6 +123,189 @@ class GraphIntelligence:
             result[nid] = next_id
 
         return result
+
+    def leiden_communities(self) -> Dict[str, Any]:
+        """
+        Detect fine-grained communities using Leiden algorithm on code entities.
+
+        Unlike communities() which clusters FILE/MODULE nodes, this clusters
+        Function/Class/Endpoint/etc. nodes based on semantic edges (CALLS, IMPORTS, etc.).
+
+        Returns dict with:
+          - clusters: {node_id: cluster_id}
+          - cluster_info: [{id, label, members, cohesion, size}]
+        """
+        if not _HAS_LEIDEN:
+            # Fallback to Louvain on semantic graph
+            return self._louvain_semantic_communities()
+
+        # 1. Build eligible node set (code entities only)
+        eligible = {
+            nid for nid, data in self._nodes.items()
+            if data.get("type") in _LEIDEN_NODE_TYPES
+        }
+
+        if len(eligible) < 2:
+            return {"clusters": {nid: 0 for nid in eligible}, "cluster_info": []}
+
+        # 2. Build undirected igraph from semantic edges
+        node_list = sorted(eligible)
+        node_to_idx = {nid: i for i, nid in enumerate(node_list)}
+
+        edges = []
+        weights = []
+        for e in self._edges:
+            etype = e.get("type", "")
+            if etype not in _SEMANTIC_EDGE_TYPES:
+                continue
+            src = e.get("source_id", "")
+            tgt = e.get("target_id", "")
+            if src in node_to_idx and tgt in node_to_idx:
+                edges.append((node_to_idx[src], node_to_idx[tgt]))
+                weights.append(e.get("weight", 0.5) + e.get("confidence", 0.5))
+
+        if not edges:
+            return {"clusters": {nid: 0 for nid in eligible}, "cluster_info": []}
+
+        g = ig.Graph(n=len(node_list), edges=edges, directed=False)
+        g.es["weight"] = weights
+
+        # 3. Run Leiden algorithm
+        partition = leidenalg.find_partition(
+            g,
+            leidenalg.ModularityVertexPartition,
+            weights="weight",
+            seed=42,
+        )
+
+        # 4. Build cluster assignments
+        clusters = {}
+        for idx, community in enumerate(partition):
+            for node_idx in community:
+                clusters[node_list[node_idx]] = idx
+
+        # Assign isolated nodes to their own cluster
+        next_id = len(partition)
+        for nid in eligible:
+            if nid not in clusters:
+                clusters[nid] = next_id
+                next_id += 1
+
+        # 5. Build cluster info
+        cluster_members: Dict[int, List[str]] = {}
+        for nid, cid in clusters.items():
+            cluster_members.setdefault(cid, []).append(nid)
+
+        cluster_info = []
+        for cid, members in sorted(cluster_members.items()):
+            # Compute cohesion: fraction of possible intra-cluster edges that exist
+            member_set = set(members)
+            intra_edges = 0
+            for e in self._edges:
+                if e.get("type") in _SEMANTIC_EDGE_TYPES:
+                    if e["source_id"] in member_set and e["target_id"] in member_set:
+                        intra_edges += 1
+
+            max_possible = len(members) * (len(members) - 1)
+            cohesion = intra_edges / max_possible if max_possible > 0 else 1.0
+
+            # Generate label from most common node names
+            names = [self._nodes.get(m, {}).get("name", "") for m in members]
+            label = self._generate_cluster_label(names, members)
+
+            cluster_info.append({
+                "id": cid,
+                "label": label,
+                "size": len(members),
+                "cohesion": round(cohesion, 4),
+                "members": members,
+            })
+
+        return {"clusters": clusters, "cluster_info": cluster_info}
+
+    def _louvain_semantic_communities(self) -> Dict[str, Any]:
+        """Fallback: Louvain on semantic edges when leidenalg not installed."""
+        eligible = {
+            nid for nid, data in self._nodes.items()
+            if data.get("type") in _LEIDEN_NODE_TYPES
+        }
+        if len(eligible) < 2:
+            return {"clusters": {nid: 0 for nid in eligible}, "cluster_info": []}
+
+        # Build subgraph with semantic edges only
+        sub = nx.Graph()
+        for nid in eligible:
+            sub.add_node(nid)
+        for e in self._edges:
+            if e.get("type") in _SEMANTIC_EDGE_TYPES:
+                src, tgt = e["source_id"], e["target_id"]
+                if src in eligible and tgt in eligible:
+                    sub.add_edge(src, tgt, weight=e.get("weight", 0.5))
+
+        try:
+            communities_list = nx.community.louvain_communities(sub, seed=42)
+        except Exception:
+            return {"clusters": {nid: 0 for nid in eligible}, "cluster_info": []}
+
+        clusters = {}
+        for idx, community in enumerate(communities_list):
+            for nid in community:
+                clusters[nid] = idx
+
+        cluster_members: Dict[int, List[str]] = {}
+        for nid, cid in clusters.items():
+            cluster_members.setdefault(cid, []).append(nid)
+
+        cluster_info = []
+        for cid, members in sorted(cluster_members.items()):
+            names = [self._nodes.get(m, {}).get("name", "") for m in members]
+            cluster_info.append({
+                "id": cid,
+                "label": self._generate_cluster_label(names, members),
+                "size": len(members),
+                "cohesion": 0.5,
+                "members": members,
+            })
+
+        return {"clusters": clusters, "cluster_info": cluster_info}
+
+    def _generate_cluster_label(self, names: List[str], members: List[str]) -> str:
+        """Generate a descriptive label for a cluster from its member names."""
+        if not names:
+            return "Unknown"
+
+        # Find common path prefix from member node metadata
+        paths = []
+        for m in members:
+            node = self._nodes.get(m, {})
+            meta = node.get("metadata", {})
+            path = meta.get("relative_path", meta.get("path", ""))
+            if path:
+                paths.append(path)
+
+        if paths:
+            # Find common directory
+            parts = [p.replace("\\", "/").split("/") for p in paths]
+            if parts:
+                common = []
+                for level_parts in zip(*parts):
+                    if len(set(level_parts)) == 1:
+                        common.append(level_parts[0])
+                    else:
+                        break
+                if common:
+                    return "/".join(common)
+
+        # Fallback: most common word in names
+        from collections import Counter
+        words = []
+        for name in names:
+            words.extend(w for w in name.lower().replace("_", " ").split() if len(w) > 2)
+        if words:
+            most_common = Counter(words).most_common(1)[0][0]
+            return most_common.capitalize()
+
+        return names[0] if names else "Cluster"
 
     def orphans(self) -> List[str]:
         """Find orphan nodes - nodes with no semantic edges (only CONTAINS/DEFINES)."""
@@ -317,18 +518,22 @@ class GraphIntelligence:
         """Return all metrics as one JSON-serializable dict."""
         pr = self.pagerank()
         comm = self.communities()
+        leiden = self.leiden_communities()
         orph = self.orphans()
         arch = self.architecture_score()
 
         return {
             "pagerank": pr,
             "communities": comm,
+            "leiden_clusters": leiden,
             "orphans": orph,
             "architecture_score": arch,
             "stats": {
                 "total_nodes": self._graph.number_of_nodes(),
                 "total_edges": self._graph.number_of_edges(),
                 "community_count": len(set(comm.values())) if comm else 0,
+                "leiden_cluster_count": len(leiden.get("cluster_info", [])),
                 "orphan_count": len(orph),
+                "leiden_backend": "leiden" if _HAS_LEIDEN else "louvain",
             },
         }
