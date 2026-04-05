@@ -668,6 +668,9 @@ body {
   <!-- Toolbar -->
   <div id="toolbar">
     <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">&#9776;</button>
+    <div style="display:inline-flex;align-items:baseline;gap:4px;white-space:nowrap;">
+      <span style="font-size:15px;font-weight:900;letter-spacing:0.5px;background:linear-gradient(135deg,#58a6ff,#bc8cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">WizWi</span><span style="font-size:9px;color:#666;font-style:italic;">by x3k</span>
+    </div>
     <button onclick="showScanDialog()" style="color:var(--accent);background:transparent;border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer;font-size:13px;">Scan Folder</button>
     <select id="source-selector" onchange="switchSource(this.value)" style="padding:4px 8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:13px;max-width:240px;cursor:pointer;" title="Data source">
       <option value="">-- Source --</option>
@@ -894,6 +897,10 @@ body {
         <label style="display:flex; align-items:center; gap:8px; padding:8px 10px; background:var(--bg-primary); border:1px solid var(--border); border-radius:4px; cursor:pointer;">
           <input type="checkbox" name="scan-passes" value="connections" checked style="accent-color:var(--accent);" />
           <div><div style="font-size:12px; font-weight:600;">Connections</div><div style="font-size:10px; color:var(--text-muted);">Calls, imports</div></div>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; padding:8px 10px; background:var(--bg-primary); border:1px solid var(--border); border-radius:4px; cursor:pointer;">
+          <input type="checkbox" name="scan-passes" value="knowledge" style="accent-color:#FFD700;" />
+          <div><div style="font-size:12px; font-weight:600; color:#FFD700;">Knowledge</div><div style="font-size:10px; color:var(--text-muted);">Docs, patterns, learnings</div></div>
         </label>
       </div>
     </div>

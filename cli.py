@@ -881,9 +881,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument(
         "--passes",
         nargs="+",
-        choices=["scan", "treesitter", "patterns", "connections"],
+        choices=["scan", "treesitter", "patterns", "connections", "flows", "validation", "llm", "knowledge"],
         default=None,
-        help="Which passes to run (default: all)",
+        help="Which passes to run (default: all free passes). Add 'llm' for paid LLM analysis.",
     )
     p_index.add_argument(
         "-v", "--verbose", action="store_true",

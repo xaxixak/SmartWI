@@ -33,6 +33,8 @@ from pipeline.pass2_patterns import PatternPass
 from pipeline.pass2b_connections import ConnectionPass
 from pipeline.pass3_llm import LLMPass
 from pipeline.pass4_validation import validate_graph
+from pipeline.pass5_flows import run_flow_tracing
+from pipeline.pass6_knowledge import run_knowledge_scan
 
 logger = logging.getLogger("workspace-intelligence")
 
@@ -116,7 +118,7 @@ def run_pipeline(
     """
     workspace_path = Path(workspace_path).resolve()
     if passes is None:
-        passes = ["scan", "treesitter", "patterns", "connections", "validation"]
+        passes = ["scan", "treesitter", "patterns", "connections", "flows", "validation"]
 
     start = time.perf_counter()
     store = GraphStore()
@@ -437,10 +439,7 @@ def run_pipeline(
                 target = file_nodes_by_path.get(resolved_posix)
                 if target:
                     # Remove old broken edge, add resolved one
-                    try:
-                        store.graph.remove_edge(edge.source_id, edge.target_id)
-                    except Exception:
-                        pass
+                    store.remove_edge(edge.source_id, edge.target_id, EdgeType.IMPORTS)
                     new_edge = GraphEdge(
                         source_id=edge.source_id,
                         target_id=target.id,
@@ -451,12 +450,12 @@ def run_pipeline(
                     )
                     store.add_edge(new_edge, validate=False)
                     total_imports += 1
+                else:
+                    # Resolved to path but no FILE node — remove dangling edge
+                    store.remove_edge(edge.source_id, edge.target_id, EdgeType.IMPORTS)
             else:
-                # Remove dangling import edge (package imports, etc.)
-                try:
-                    store.graph.remove_edge(edge.source_id, edge.target_id)
-                except Exception:
-                    pass
+                # Package import (express, mongoose, etc.) — remove dangling edge
+                store.remove_edge(edge.source_id, edge.target_id, EdgeType.IMPORTS)
 
         passes_run.append("treesitter")
         logger.info(f"  Processed {total_files} files, created {total_nodes} nodes, resolved {total_imports} imports")
@@ -577,6 +576,38 @@ def run_pipeline(
             errors.append(f"Pass 4 error: {e}")
             logger.error(f"  Pass 4 failed: {e}")
 
+    # -- Pass 5: Execution Flow Tracing (FREE) -------------------------
+    if "flows" in passes:
+        logger.info("Pass 5: Execution flow tracing...")
+        try:
+            flow_result = run_flow_tracing(store)
+            passes_run.append("flows")
+            logger.info(
+                f"  {flow_result['entry_points_found']} entry points, "
+                f"{flow_result['flows_traced']} flows, "
+                f"{flow_result['nodes_created']} nodes, "
+                f"{flow_result['edges_created']} edges"
+            )
+        except Exception as e:
+            errors.append(f"Pass 5 error: {e}")
+            logger.error(f"  Pass 5 failed: {e}")
+
+    # -- Pass 6: Knowledge scan -----------------------------------------
+    if "knowledge" in passes and scan_result.projects:
+        logger.info("Pass 6: Knowledge graph scanning...")
+        try:
+            project_paths = [str(Path(workspace_path) / p.path) for p in scan_result.projects]
+            kg_result = run_knowledge_scan(store, project_paths)
+            passes_run.append("knowledge")
+            logger.info(
+                f"  {kg_result['files_scanned']} files scanned, "
+                f"{kg_result['nodes_created']} knowledge nodes, "
+                f"{kg_result['edges_created']} edges"
+            )
+        except Exception as e:
+            errors.append(f"Pass 6 error: {e}")
+            logger.error(f"  Pass 6 failed: {e}")
+
     # -- Save Output ---------------------------------------------------
     duration_ms = (time.perf_counter() - start) * 1000
 
@@ -675,8 +706,8 @@ def main():
     parser.add_argument(
         "--passes",
         nargs="+",
-        choices=["scan", "treesitter", "patterns", "connections", "llm", "validation"],
-        default=["scan", "treesitter", "patterns", "connections", "validation"],
+        choices=["scan", "treesitter", "patterns", "connections", "flows", "llm", "validation"],
+        default=["scan", "treesitter", "patterns", "connections", "flows", "validation"],
         help="Which passes to run (default: all free passes; add 'llm' for paid LLM analysis)",
     )
     parser.add_argument(
